@@ -7,14 +7,8 @@ for f in disable remove; do [ ! -e "$MODDIR/$f" ] || echo "Module flag: $f"; don
 for f in bridge.jar bin/ios_brightness_daemon; do
   if [ -s "$MODDIR/$f" ]; then ls -l "$MODDIR/$f"; else echo "MISSING: $f"; fi
 done
-pid=$(cat "$STATE/supervisor.pid" 2>/dev/null)
-case "$pid" in
-  ''|*[!0-9]*) echo 'Supervisor: no valid pid' ;;
-  *) if [ -r "/proc/$pid/cmdline" ]; then
-       echo "Supervisor PID $pid command (verify identity):"
-       tr '\000' ' ' < "/proc/$pid/cmdline"; echo
-     else echo 'Supervisor: stale pid'; fi ;;
-esac
+echo 'Process identity / heartbeat health:'
+sh "$MODDIR/control.sh" health
 echo 'Config validation:'
 "$MODDIR/bin/ios_brightness_daemon" --config check "$STATE/config.conf" >/dev/null && echo valid
 echo 'State files (no learning contents):'
@@ -40,4 +34,4 @@ if ! sh "$MODDIR/control.sh" status; then
 fi
 echo
 echo 'Recent service log:'
-tail -30 "$STATE/service.log" 2>/dev/null
+sh "$MODDIR/control.sh" log-read

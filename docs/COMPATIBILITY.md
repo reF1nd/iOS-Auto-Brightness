@@ -34,3 +34,15 @@ sh /data/adb/modules/ios_auto_brightness/control.sh config-read
 ## 框架依据
 
 [Android 12 DisplayManager](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android12-release/core/java/android/hardware/display/DisplayManager.java) 提供按 displayId 设置临时亮度；[DisplayDeviceConfig](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/display/DisplayDeviceConfig.java) 区分 nits、HAL backlight 与系统 brightness 映射。这里对隐藏接口均以实际运行能力为准，不假定 ROM 完整遵循 AOSP。
+
+## beta.8：系统保护与兼容回退
+
+系统保护优先于调光、阳光增强和学习。读取 `BrightnessInfo.brightnessMaxReason`，非零原因（包括未知厂商扩展）一律释放临时亮度；`PowerManager` 热状态从 LIGHT 开始同样释放，读取失败也不继续控制。监听热状态变化并轮询复核，两个信号持续正常 10 秒后才能恢复。保持使用系统临时亮度接口及实时上下限，不写背光、温控节点，不改温控配置或限亮原因。可见信号之外的厂商底层保护仍由系统执行。
+
+稳定目标与实际输出不同不会直接触发回拉。仅当主屏当前 dump 明确显示 `automatic`、临时亮度为 NaN、限亮原因为 0，且下一帧保护、应用覆盖、HDR、用户操作等检查都通过，才重新提交丢失的临时请求。无法确认的 OEM 格式不自动重试。
+
+没有事件接口或 nits 校准时，WebUI 的“学习下一次手动调节”提供 30 秒显式窗口：用户随后操作亮度条，适配层等待实际归一化亮度稳定，再调用核心学习。不会把未经确认的 Settings 变化当作偏好，也不会用固定 255/Gamma 换算。无光感、遮挡、光线不稳定、熄屏、切用户或系统保护均取消学习。此回退需要系统发出带 URI 的亮度设置通知。
+
+前置、后置和 sysfs/dumpsys 来源均可学习，按面板、用户和来源隔离，默认前置继续使用原文件。切换来源不覆盖旧记录。WebUI 光感选择写入私有 `sensors.conf`，支持 `front=完整名称`、`back=完整名称`（`none` 禁用）、`sysfs=/sys/.../lux` 或 `in_illuminance_input`；留空自动发现。没有显式前置选择时兼容 `persist.sys.display.als_name`，匹配失败明确报告并回退系统默认传感器。指定 sysfs 时优先使用该照度节点，失败不会静默切换另一来源。
+
+离线 `control.sh log-read` 按时间拼接轮转备份和当前日志的最近 80 行；`log-clear` 清除当前日志及备份，与轮转互斥。健康诊断检查进程身份、启动时间、同次开机和心跳新鲜度；CPU 分开报告 Java 桥接与 native 核心的进程平均占用（不含 supervisor 和短命 dumpsys 子进程）。

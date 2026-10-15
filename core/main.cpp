@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <chrono>
 #include <unistd.h>
 using namespace brightness;
 int main(int argc,char**argv) {
@@ -44,12 +46,16 @@ int main(int argc,char**argv) {
         Store store{dir,core.profile.id,0};bool hasUser=false;Output last;
         std::cout<<std::setprecision(10);
         std::string line;
+        const auto started=std::chrono::steady_clock::now();
         auto status=[&]() {
+            rusage usage{};getrusage(RUSAGE_SELF,&usage);
+            const double cpu=usage.ru_utime.tv_sec+usage.ru_utime.tv_usec/1e6+usage.ru_stime.tv_sec+usage.ru_stime.tv_usec/1e6;
+            const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
             std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"settled\":"<<(core.settled()?"true":"false")<<",\"ambient_guard\":"<<(core.ambientGuard()?"true":"false")<<",\"fast_dark\":"<<(core.fastDark()?"true":"false")<<",\"alpha\":"<<core.alpha()<<",\"desired\":"<<core.desired()<<",\"night_scale\":"<<core.nightScale()<<",\"points\":[";
             bool comma=false;for(auto&p:core.learning.points){if(comma)o<<',';comma=true;o<<"{\"lux\":"<<p.lux<<",\"brightness\":"<<p.value<<",\"time\":"<<p.time<<'}';}
             o<<"],\"legacy_offset\":"<<core.learning.legacy_offset<<",\"local_hour\":"<<core.frame().local_hour<<",\"curve\":[";
             for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.profile.toBrightness(baseNits(lux))<<','<<core.learning.target(lux,core.profile,core.nightScale())<<']';}
-            o<<"]}";return o.str();
+            o<<"],\"core_pid\":"<<getpid()<<",\"cpu_core_percent\":"<<(elapsed>0?100*cpu/elapsed:0)<<"}";return o.str();
         };
         while(std::getline(std::cin,line)) {
             try {
@@ -59,6 +65,10 @@ int main(int argc,char**argv) {
                 if(cmd=="USER") {
                     int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");end();
                     if(!hasUser||store.user!=user){store.user=user;hasUser=true;core.reset();core.learning=store.load(saveStatus);last={false,0,"user_changed"};}
+                } else if(cmd=="SOURCE") {
+                    std::string source;if(!(in>>source)||!hasUser||source.empty()||source.size()>40||source.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789")!=std::string::npos)throw std::runtime_error("invalid source");end();
+                    auto identity=core.profile.id+(source=="default"?"":"-"+source);
+                    if(store.profile!=identity){store.profile=identity;core.reset();core.learning=store.load(saveStatus);last={false,0,"source_changed"};}
                 } else if(cmd=="FRAME"||cmd=="FRAME2") {
                     Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");
                     if(cmd=="FRAME2"&&(!(in>>f.local_hour)||f.local_hour<0||f.local_hour>23))throw std::runtime_error("invalid local hour");

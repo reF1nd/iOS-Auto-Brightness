@@ -16,3 +16,7 @@ java -cp build/bridge/classes:build/bridge/test-classes AdapterPolicyTest
 java -cp build/bridge/classes:build/bridge/test-classes LearningLuxTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/CompatibilityTest.java
 java -cp build/bridge/classes:build/bridge/test-classes CompatibilityTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/ProtectionPolicyTest.java
+java -cp build/bridge/classes:build/bridge/test-classes ProtectionPolicyTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/ManualLearningTest.java
+java -cp build/bridge/classes:build/bridge/test-classes ManualLearningTest

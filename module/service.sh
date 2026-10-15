@@ -50,7 +50,9 @@ if [ ! -f "$STATE/config.conf" ] && [ ! -f "$STATE/legacy-config.conf" ]; then
 fi
 # stop is session-scoped: a deliberate reboot may restart an enabled module.
 rm -f "$STATE/stop"
-rotate() {
+rotate() (
+  exec 8>"$STATE/log.lock"
+  flock 8 || return
   max=$(sed -n 's/^log_max_bytes=//p' "$STATE/config.conf" | tail -1)
   backups=$(sed -n 's/^log_max_backups=//p' "$STATE/config.conf" | tail -1)
   case "$max" in ''|*[!0-9]*) max=1048576 ;; esac
@@ -63,7 +65,7 @@ rotate() {
   while [ "$i" -gt 1 ]; do old=$((i - 1)); [ ! -f "$LOG.$old" ] || cp "$LOG.$old" "$LOG.$i"; i=$old; done
   cp "$LOG" "$LOG.1"
   : > "$LOG"
-}
+)
 failures=0
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] && [ ! -f "$STATE/stop" ]; do
   /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge "$MODDIR" "$STATE" >> "$LOG" 2>&1 &

@@ -28,6 +28,23 @@ with tempfile.TemporaryDirectory() as state:
     s = ask(p, 'USER 0')
     assert s['points'][0]['brightness'] == 0.15 and s['storage'] == 'loaded', s
     exported = ask(p, 'EXPORT')['data']
+    assert s['core_pid'] == p.pid and s['cpu_core_percent'] >= 0
+    assert ask(p, 'SOURCE rear')['points'] == []
+    ask(p, 'FRAME 2000 1 1 100 100 0 35 80 0 0.1 0.001 0.4 0')
+    assert ask(p, 'EVENT 123457 100 0.2')['storage'] == 'saved'
+    assert ask(p, 'SOURCE default')['points'][0]['brightness'] == 0.15
+    assert ask(p, 'SOURCE rear')['points'][0]['brightness'] == 0.2
+    p.kill();p.wait(timeout=5);p=start();ask(p, 'USER 0')
+    assert ask(p, 'SOURCE rear')['points'][0]['brightness'] == 0.2
+    ask(p, 'SOURCE default')
+    p.stdin.write('SOURCE ../bad\n');p.stdin.flush()
+    assert not json.loads(p.stdout.readline())['ok']
+    # Thermal-blocked frames must never accept learning or produce an override.
+    protected=ask(p, 'FRAME 3000 1 1 100 100 0 35 80 0 0.05 0.001 0.08 1')
+    assert not protected['apply']
+    assert ask(p, 'EVENT 123458 100 0.05').get('accepted') is False
+    assert ask(p, 'STATUS')['points'][0]['brightness'] == 0.15
+
     s = ask(p, 'USER 1')
     assert s['points'] == [], s
     s = ask(p, 'USER 0')

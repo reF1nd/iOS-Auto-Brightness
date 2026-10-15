@@ -53,3 +53,31 @@ a=json.load(open('build/smoke-status.json'));b=json.load(open('build/smoke-statu
 assert b.get('ok') and b.get('bridge')=='active' and b['heartbeat_ms']>a['heartbeat_ms'],b
 assert b.get('window_override_detection') in ['framework','power_dump:0'],b
 PY
+# Inject only on the CI emulator, never on a user's device. Verify adapter wiring.
+adb shell cmd thermalservice override-status 3
+sleep 3
+adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-thermal.json
+python3 - <<'PY'
+import json
+s=json.load(open('build/smoke-thermal.json'))
+assert s.get('ok') and s.get('thermal_status')==3 and not s.get('apply'),s
+assert s.get('protection') in ['system_thermal','system_brightness_limit'],s
+assert not s.get('manual_learning_armed'),s
+PY
+adb shell cmd thermalservice reset
+sleep 3
+adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-cooldown.json
+python3 - <<'PY'
+import json
+s=json.load(open('build/smoke-cooldown.json'))
+assert s.get('ok') and not s.get('apply') and s.get('protection')=='protection_cooldown',s
+PY
+sleep 12
+adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-resumed.json
+python3 - <<'PY'
+import json
+s=json.load(open('build/smoke-resumed.json'))
+assert s.get('ok') and s.get('protection')=='clear',s
+assert s.get('core_pid',0)>0 and s.get('bridge_pid',0)>0 and s.get('boot_id'),s
+assert s.get('cpu_core_percent',-1)>=0,s
+PY

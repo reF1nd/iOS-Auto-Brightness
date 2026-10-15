@@ -124,12 +124,12 @@ async function refresh(load=false) {
     $('learningState').textContent=`存储：${s.storage??'未知'} · 调节事件：${s.event_status??'等待'} · 用户序号：${s.user??'—'}`;
     $('points').replaceChildren();const table=document.createElement('table');
     for(const p of s.points??[]){const tr=document.createElement('tr');for(const value of [`${p.lux.toFixed(1)} lux`,`${(p.brightness*100).toFixed(2)}%`,new Date(p.time).toLocaleString()]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}$('points').append(table);
-    $('diagnostics').textContent=JSON.stringify({profile:s.profile,calibration:s.calibration,learning_available:s.learning_available,window_override_detection:s.window_override_detection,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
+    $('diagnostics').textContent=JSON.stringify({profile:s.profile,calibration:s.calibration,learning_available:s.learning_available,window_override_detection:s.window_override_detection,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,cpu_core_percent:s.cpu_core_percent,cpu_total_percent:(s.cpu_percent??0)+(s.cpu_core_percent??0),protection:s.protection,thermal_status:s.thermal_status,brightness_max_reason:s.brightness_max_reason,learning_scope:s.learning_scope,manual_learning_armed:s.manual_learning_armed,sensor_selection:s.sensor_selection,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
     preview();
     $('curvePoint').textContent=`红点：当前实际输出 · 照度 ${s.lux>=0?s.lux.toFixed(2):'—'} lux · 系统设置 ${s.setting>=0?(s.setting*100).toFixed(2):'—'}%`;
-    if($('liveLog').checked)$('log').textContent=await exec('tail -n 80 /data/adb/ios_auto_brightness/service.log');
+    if($('liveLog').checked)$('log').textContent=await exec(`sh ${quote(`${root}/control.sh`)} log-read`);
     if(load&&!dirty)setConfig(await readConfig());
-    if(!busy)note(s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':'已连接。手动调节后，请确认学习状态为 saved。');
+    if(!busy)note(s.protection&&s.protection!=='clear'?'系统保护优先：已释放亮度控制并暂停学习。':s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':s.learning_available?'已连接。手动调节后，请确认学习状态为 saved。':'自动事件学习不可用，可点击“学习下一次手动调节”后再拖亮度条。');
   }catch(e){$('status').replaceChildren();$('learningState').textContent='服务离线：旧状态已清除';$('points').replaceChildren();runtime=null;preview();note(e.message);
     try{if(load&&!dirty)setConfig(await readConfig());$('diagnostics').textContent=await exec(`sh ${quote(`${root}/check_status.sh`)}`);}catch(d){$('diagnostics').textContent=d.message;}
   }finally{polling=false;}
@@ -153,7 +153,7 @@ $('clear').onclick=()=>{if(confirm('清除当前用户的全部学习记录？�
 $('export').onclick=()=>action(async()=>{const data=(await ctl('learn-export')).data;const url=URL.createObjectURL(new Blob([data],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download='ios-brightness-learning.dat';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);note('已导出当前用户学习数据。');});
 $('import').onchange=()=>action(async()=>{const file=$('import').files[0];if(!file)return;if(file.size>32768)throw new Error('导入文件过大');await ctl('learn-import',base64(await file.text()));$('import').value='';await refresh();note('学习数据已验证并导入。');});
 $('diagnose').onclick=()=>action(async()=>{$('diagnostics').textContent=await exec(`sh ${quote(`${root}/check_status.sh`)}`);});
-$('logs').onclick=()=>action(async()=>{$('log').textContent=await exec("tail -n 80 /data/adb/ios_auto_brightness/service.log");});
+$('logs').onclick=()=>action(async()=>{$('log').textContent=await exec(`sh ${quote(`${root}/control.sh`)} log-read`);});
 setConfig([...defaults].map(([k,v])=>`${k}=${v}`).join('\n')+'\n');
 try{const text=await exec(`cat ${quote(`${root}/default.conf`)}`);for(const [k,v] of Object.entries(parseConfig(text)))defaults.set(k,v);setConfig(text);}catch{}
 await refresh(true);
@@ -166,4 +166,8 @@ $('configImport').onchange=()=>action(async()=>{
   if(!confirm('导入并应用此配置？当前调参会被替换，学习记录保持不变。'))return;
   await save(text);await refresh();
 });
-$('clearLog').onclick=()=>{if(confirm('清空当前运行日志？轮转备份会保留。'))action(async()=>{await ctl('log-clear');$('log').textContent='当前日志已清空。';note('当前运行日志已清空，学习记录不受影响。');});};
+$('clearLog').onclick=()=>{if(confirm('清空运行日志及轮转备份？学习记录保持不变。'))action(async()=>{await ctl('log-clear');$('log').textContent='运行日志及轮转备份已清空。';note('当前运行日志已清空，学习记录不受影响。');});};
+
+$('learnArm').onclick=()=>action(async()=>{await ctl('learn-arm');note('已开启 30 秒学习窗口：现在轻微拖动系统亮度条，然后保持环境稳定约 3 秒。');});
+$('sensorRead').onclick=()=>action(async()=>{const s=await ctl('sensors-get');$('sensorConfig').value=s.data;$('sensorList').textContent=s.sensors.join('\n');note('空值为自动选择；back=none 可关闭后置参与，sysfs 只接受照度节点。');});
+$('sensorSave').onclick=()=>action(async()=>{await ctl('sensors-save',base64($('sensorConfig').value));note('光感选择已验证并保存，服务将在两秒内应用；不同来源的学习记录独立保存。');});

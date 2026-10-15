@@ -25,7 +25,12 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
     if(command.includes('config-read')){window[key](0,config,'');return;}
     if(command.includes('check_status.sh')){window[key](0,'OFFLINE: stale snapshot','');return;}
     if(command.startsWith('cat ')){window[key](0,config,'');return;}
+    if(command.includes('log-read')){window[key](0,'recent log','');return;}
+    if(command.includes("'log-clear'")){window[key](0,'{"ok":true}','');return;}
+    if(command.includes("'sensors-get'")){window[key](0,JSON.stringify({ok:true,data:'front=\nback=\nsysfs=\n',sensors:['Exact Light']}),'');return;}
+    if(command.includes("'sensors-save'")){window[key](0,'{"ok":true}','');return;}
     if(!online){window[key](1,'','service unavailable');return;}
+    if(command.includes("'learn-arm'")){window[key](0,'{"ok":true}','');return;}
     if(command.includes("'config-set'")) {
       const match=command.match(/'config-set' '([^']+)'/);assert.ok(match);
       config=Buffer.from(match[1],'base64').toString();output={ok:true};
@@ -65,7 +70,14 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   await new Promise(resolve=>setImmediate(resolve));
   assert.ok(commands.some(c=>c.includes("'log-clear'")));
   assert.ok(!commands.some(c=>c.includes("'learn-clear'")));
-  online=false;await elements.get('refresh').onclick();assert.equal(elements.get('status').children.length,0);
+  await elements.get('learnArm').onclick();assert.match(elements.get('notice').textContent,/30 秒/);
+  online=false;
+  await elements.get('sensorRead').onclick();assert.equal(elements.get('sensorList').textContent,'Exact Light');
+  await elements.get('sensorSave').onclick();assert.match(elements.get('notice').textContent,/独立保存/);
+  await elements.get('logs').onclick();assert.equal(elements.get('log').textContent,'recent log');
+  elements.get('clearLog').onclick();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(elements.get('log').textContent,/备份已清空/);
+  await elements.get('refresh').onclick();assert.equal(elements.get('status').children.length,0);
   assert.match(elements.get('diagnostics').textContent,/OFFLINE/);
   elements.get('config').value='alpha_fast=0.5\n';elements.get('config').listeners.input();
   await elements.get('saveRaw').onclick();assert.equal(config,'alpha_fast=0.5\n');
