@@ -94,7 +94,18 @@ PY
 
 # Reference policy learns slider observations directly, without the old arm window.
 adb emu sensor set light 100
-sleep 6
+stable=0
+for _ in $(seq 1 30); do
+  adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-learning-ready.json
+  if python3 - <<'PY'
+import json,sys
+s=json.load(open('build/smoke-learning-ready.json'))
+sys.exit(0 if s.get('apply') and abs(s.get('lux',-1)-100)<.5 else 1)
+PY
+  then stable=1; break; fi
+  sleep 2
+done
+[[ "$stable" == 1 ]]
 adb shell settings put system screen_brightness 171
 sleep 5
 adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-learned.json
