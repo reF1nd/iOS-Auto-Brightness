@@ -44,6 +44,9 @@ class HotUpdateTest(unittest.TestCase):
         getprop = self.bin / 'getprop'
         getprop.write_text('#!/bin/sh\necho 1\n')
         getprop.chmod(0o755)
+        chcon = self.bin / 'chcon'
+        chcon.write_text('#!/bin/sh\nexit 0\n')
+        chcon.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}', IAB_BB=str(self.bb))
         self.children = []
         self.fake_process(124, 123, 400, ['sh', 'install.sh'])

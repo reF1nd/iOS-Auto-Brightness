@@ -23,7 +23,7 @@ hot_installer() {
     } exit 1}'
 }
 hot_find_installer() {
-  HOT_PARENT= HOT_PARENT_STAMP=
+  HOT_PARENT='' HOT_PARENT_STAMP=''
   hot_pid=$1 hot_depth=0
   while [ "$hot_pid" != 1 ]; do
     hot_stamp_before=$(hot_stamp "$hot_pid")
@@ -198,6 +198,10 @@ hot_prepare() {
   cp "$HOT_STAGED/hot-update.sh" "$HOT_TX/worker.sh" || return 1
   mkdir "$HOT_TX/new" "$HOT_TX/data-backup" || return 1
   cp -a "$HOT_STAGED/." "$HOT_TX/new/" || return 1
+  # Copies made below the private state directory otherwise inherit adb_data_file.
+  # Match the labels already assigned by the root manager to the staged module.
+  chmod 755 "$HOT_TX/new" || return 1
+  chcon -R --reference="$HOT_STAGED" "$HOT_TX/new" || return 1
   rm -f "$HOT_TX/new/update" "$HOT_TX/new/.iab-install-token"
   hot_manifest "$HOT_TX/new" > "$HOT_TX/new.manifest" || return 1
   printf '%s\n' "$HOT_TOKEN" > "$HOT_STAGED/.iab-install-token" || return 1
