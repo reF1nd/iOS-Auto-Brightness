@@ -76,10 +76,15 @@ display=实际默认主屏的 uniqueId
 node=已确认属于该主屏的背光目录名
 ```
 
-节点限定在 `/sys/class/backlight` 下，不能填任意路径。绑定不代表已经验证：启动仍须读取所选物理屏的 `mBrightness`/`mBacklight` 并确认逐点相同，再确认节点请求值、驱动回报与系统归一化亮度乘 `max_brightness` 的结果连续稳定匹配至少一秒。不支持猜测主屏、非相同映射、缺少驱动回报、缺少限亮原因的设备，也不会静默改回临时亮度接口。现有校准与学习存储的坐标不变。
+节点限定在 `/sys/class/backlight` 下，不能填任意路径。绑定不代表已经验证：启动仍须读取所选物理屏的 `mBrightness`/`mBacklight` 并确认逐点相同，再确认节点请求值、独立驱动回报与系统归一化亮度乘 `max_brightness` 的结果连续稳定匹配至少一秒。通用节点容差为一个整数单位；已验证的小米面板允许合成器带来的小幅补偿偏差（16 单位或目标的 2%，取较大值），不从单点拟合全局换算。不支持猜测主屏、非相同映射、缺少驱动回报、缺少限亮原因的设备，也不会静默改回临时亮度接口。现有校准与学习存储的坐标不变。
 
 亮屏自动模式最多每 100 ms 核对背光。外部改写后至少等待两秒，再重新验证稳定的框架/节点匹配；不能用超时解除不明驱动降亮。写入前复核 max_brightness、原值与驱动回报；不锁权限，仍存在最后检查和系统写入之间无法原子消除的竞态。
 
 每次实际改变节点前保存恢复记录（绑定启动标识、物理屏与最后请求值）。正常停止、桥接异常后监督恢复和下一次启动只在节点仍是最后请求值、屏幕仍亮且驱动没有额外降亮时恢复当下框架值，并遵守最新系统上限；保护生效时恢复绝不提高亮度。若整个监督进程树被 SIGKILL，立即恢复无法保证，后续系统写入或服务启动才会接续；不保留禁用后的守护进程。观察模式不写背光或恢复记录。
 
 WebUI 分别显示输出方式、节点状态、框架报告和节点请求/驱动回报。直接写节点本身不移动系统滑块，不承诺滑块与实际输出完全同步，也不把节点数值称为实测屏幕亮度。
+
+
+小米已验证面板的 sysfs `actual_brightness` 是恒定返回 0 的占位接口，因此改用 `/dev/mi_display/disp_feature` 的只读 `GET_BRIGHTNESS`（`_IOR('D', 0x0B, 16)`）读取驱动保存的背光值。不调用 SET、MIPI 或温控写接口，读取失败暂停输出。驱动保存值仍不是光学实测值。原 `brightness_clone` 只是框架侧缓存，不用它伪装实际背光回报。普通 brightness 写入会经过驱动的 `thermal_max_brightness` 裁剪；框架保护检查同时保留。这一结论有公开驱动源码支持，但不能代替当前内核所有厂商温控路径的实机升温验收。
+
+源码依据：[小米显示驱动 sysfs 写入、恒零 get_brightness 与温控回调](https://github.com/MiCode/vendor_opensource_display-drivers/blob/popsicle-w-oss/msm/sde/sde_connector.c)、[只读 UAPI](https://github.com/MiCode/vendor_opensource_display-drivers/blob/popsicle-w-oss/include/uapi/display/drm/mi_disp.h)、[驱动背光与 clone 的读取实现](https://github.com/MiCode/vendor_opensource_display-drivers/blob/popsicle-w-oss/msm/mi_disp/mi_dsi_panel.c)。

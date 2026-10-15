@@ -125,7 +125,7 @@ public final class Bridge implements SensorEventListener {
         return (Context)at.getMethod("getSystemContext").invoke(thread);
     }
     static final File BACKLIGHT_ROOT=new File("/sys/class/backlight");
-    static void release(Context context,File state) throws Exception {
+    static void release(Context context,File state,File module) throws Exception {
         DisplayManager dm=(DisplayManager)context.getSystemService(Context.DISPLAY_SERVICE);
         Object global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
         Display main=dm.getDisplay(0);if(main==null)return;
@@ -135,7 +135,19 @@ public final class Bridge implements SensorEventListener {
         DirectBacklight.restore(BACKLIGHT_ROOT,new File(state,"direct-output.properties"),
             (String)call(main,"getUniqueId",new Class<?>[]{}),read(new File("/proc/sys/kernel/random/boot_id"),128).trim(),
             main.getState()==Display.STATE_ON&&pm.isInteractive(),safe,
-            number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness"),number(info,"brightnessMaximum"));
+            number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness"),number(info,"brightnessMaximum"),()->standalonePanelRead(module));
+    }
+    static long standalonePanelRead(File module) throws IOException {
+        Process p=new ProcessBuilder(new File(module,"bin/ios_brightness_daemon").getPath(),"--panel-read").start();
+        try {
+            if(!p.waitFor(2,TimeUnit.SECONDS))throw new IOException("panel readback timeout");
+            JSONObject result=new JSONObject(boundedLine(new InputStreamReader(p.getInputStream(),StandardCharsets.UTF_8),4096));
+            if(!result.optBoolean("ok"))throw new IOException("panel readback unavailable");
+            return result.getLong("driver_brightness");
+        }catch(Exception e){throw new IOException("panel readback failed",e);}finally{p.destroy();}
+    }
+    long panelRead() throws IOException {
+        try{return request("PANEL_READ").getLong("driver_brightness");}catch(Exception e){throw new IOException("panel readback failed",e);}
     }
     static String boundedLine(Reader r,int limit) throws IOException {
         StringBuilder b=new StringBuilder();int c;
@@ -184,7 +196,7 @@ public final class Bridge implements SensorEventListener {
         power=(PowerManager)c.getSystemService(Context.POWER_SERVICE);
         try {
             if(!calibrated||!DirectBacklight.identityMapping(calibrationDump,displayId))throw new IOException("verified identity brightness/backlight mapping required");
-            String node="";
+            String node="";boolean verifiedPanel=false;
             File binding=new File(state,"backlight.conf");
             if(binding.isFile()) {
                 Properties choice=new Properties();choice.load(new StringReader(read(binding,4096)));
@@ -196,10 +208,10 @@ public final class Bridge implements SensorEventListener {
                 Display.Mode mode=display.getDisplay(0).getMode();
                 if(profileName.equals("altdb-main-hyperos4")&&mode.getPhysicalWidth()==1200&&mode.getPhysicalHeight()==2608
                     &&Backlight.number(new File(BACKLIGHT_ROOT,"panel0-backlight/max_brightness"))==16383
-                    &&Backlight.number(new File(BACKLIGHT_ROOT,"panel1-backlight/max_brightness"))==4095)node="panel0-backlight";
+                    &&Backlight.number(new File(BACKLIGHT_ROOT,"panel1-backlight/max_brightness"))==4095){node="panel0-backlight";verifiedPanel=true;}
                 else throw new IOException("explicit main-panel backlight.conf binding required");
             }
-            direct=new DirectBacklight(BACKLIGHT_ROOT,node,new File(state,"direct-output.properties"),displayId,bootId);
+            direct=new DirectBacklight(BACKLIGHT_ROOT,node,new File(state,"direct-output.properties"),displayId,bootId,verifiedPanel?this::panelRead:null);
             outputStatus="verifying_mapping";
         }catch(Exception e){outputStatus="backlight_unavailable: "+rootCause(e);}
         loadSensorChoice();
@@ -208,7 +220,7 @@ public final class Bridge implements SensorEventListener {
         server=new LocalServerSocket(SOCKET);
         Process launched=null;
         try {
-            if(!observe)release(context,state);
+            if(!observe)release(context,state,module);
             launched=new ProcessBuilder(new File(module,"bin/ios_brightness_daemon").getPath(),state.getPath(),new File(state,"active.profile").getPath()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             core=launched;coreIn=new BufferedWriter(new OutputStreamWriter(core.getOutputStream(),StandardCharsets.UTF_8));coreOut=new BufferedReader(new InputStreamReader(core.getInputStream(),StandardCharsets.UTF_8));
         }catch(Exception e){server.close();if(launched!=null)launched.destroy();throw e;}
@@ -367,7 +379,7 @@ public final class Bridge implements SensorEventListener {
                 SystemClock.sleep(1000);
                 if(SystemClock.elapsedRealtime()-Math.max(heartbeat,nextTickAt)>5000) {
                     System.err.println("Bridge heartbeat expired; releasing display");
-                    try { if(!observe)release(context,state); } catch(Exception ignored) {}
+                    try { if(!observe)release(context,state,module); } catch(Exception ignored) {}
                     core.destroy();System.exit(1);
                 }
             }
@@ -388,7 +400,7 @@ public final class Bridge implements SensorEventListener {
                 ||(overridden&&number(info,"brightnessMaximum")<lastWrite))return false;
         if(!interaction.observe(now,adjusted(info),overridden))return false;
         // Restore only if our last raw value is still present. A new SystemUI write wins.
-        release(context,state);if(direct!=null)direct.released();
+        release(context,state,module);if(direct!=null)direct.released();
         overridden=false;lastWrite=-1;pending=null;manual.cancel();settingsLearning.reset();
         changedAt=now;result=request("HOLD "+now);return true;
     }
@@ -403,7 +415,7 @@ public final class Bridge implements SensorEventListener {
         },"iab-interaction-check").start();
     }
     void clearOverride() throws Exception {
-        if(!observe&&(overridden||(direct!=null&&direct.owned())))release(context,state);
+        if(!observe&&(overridden||(direct!=null&&direct.owned())))release(context,state,module);
         overridden=false;lastWrite=-1;
         if(direct!=null&&direct.owned())direct.released();
     }
@@ -800,7 +812,7 @@ public final class Bridge implements SensorEventListener {
         if(!closing.compareAndSet(false,true))return;
         sensors.unregisterListener(this);
         // Release even if the last call completed before overridden was set.
-        try{if(!observe)release(context,state);}catch(Exception e){System.err.println("release: "+e);}
+        try{if(!observe)release(context,state,module);}catch(Exception e){System.err.println("release: "+e);}
         try{server.close();coreIn.close();}catch(Exception ignored){}
         core.destroy();
         try{replace(new File(state,"status.json"),new JSONObject().put("ok",true).put("bridge","stopped").toString());}catch(Exception ignored){}
@@ -850,7 +862,7 @@ public final class Bridge implements SensorEventListener {
                 System.out.println(new JSONObject().put("ok",true).put("data",file.isFile()?read(file,4096):new SensorChoice("").encode()).put("sensors",list));
             }return;
         }
-        if(args.length==1&&args[0].equals("release")){release(context,new File("/data/adb/ios_auto_brightness"));return;}
+        if(args.length==1&&args[0].equals("release")){release(context,new File("/data/adb/ios_auto_brightness"),new File("/data/adb/modules/ios_auto_brightness"));return;}
         if(args.length<2||args.length>3)throw new IllegalArgumentException("MODULE STATE [--observe]");
         Bridge bridge=new Bridge(context,new File(args[0]),new File(args[1]),args.length==3&&args[2].equals("--observe"));
         bridge.begin();Looper.loop();

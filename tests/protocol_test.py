@@ -17,7 +17,12 @@ with tempfile.TemporaryDirectory() as state:
         response = json.loads(p.stdout.readline())
         assert response['ok'], response
         return response
+    probe = json.loads(subprocess.check_output([exe, '--panel-read'], text=True))
+    assert not probe['ok'] and 'readback' in probe['error'], probe  # no vendor node on CI host
     p = start()
+    p.stdin.write('PANEL_READ\n');p.stdin.flush()
+    probe = json.loads(p.stdout.readline())
+    assert not probe['ok'], probe
     ask(p, 'USER 0')
     ask(p, 'FRAME 1000 1 1 100 100 0 35 80 0 0.1 0.001 0.4 0')
     s = ask(p, 'EVENT 123456 100 0.15')

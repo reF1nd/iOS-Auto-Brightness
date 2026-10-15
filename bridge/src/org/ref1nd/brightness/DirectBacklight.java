@@ -8,12 +8,19 @@ import java.util.*;
 
 /** Cooperative sysfs writer. Never locks permissions or fights another writer. */
 public final class DirectBacklight {
+    public interface Readback {long read() throws IOException;}
+    private final Readback readback;
     private final File node, journal;
+    private float baselineFramework=Float.NaN;
     private final String display, boot;
     public final long maximum;
     private long last=-1, stableAt=-1, retryAt=0, baseline=-1;
     public String status="verifying_mapping";
     public DirectBacklight(File root,String name,File journal,String display,String boot) throws IOException {
+        this(root,name,journal,display,boot,null);
+    }
+    public DirectBacklight(File root,String name,File journal,String display,String boot,Readback readback) throws IOException {
+        this.readback=readback;
         if(!name.matches("[A-Za-z0-9_-]+"))throw new IOException("invalid backlight node name");
         this.node=new File(root,name);this.journal=journal;this.display=display;this.boot=boot;
         maximum=Backlight.number(new File(node,"max_brightness"));
@@ -22,7 +29,7 @@ public final class DirectBacklight {
     public String path(){return node.getPath();}
     public boolean owned(){return last>=0;}
     public long requested(){return Backlight.number(new File(node,"brightness"));}
-    public long actual(){return Backlight.number(new File(node,"actual_brightness"));}
+    public long actual(){try{return readback==null?Backlight.number(new File(node,"actual_brightness")):readback.read();}catch(IOException e){return -1;}}
     public static long units(float value,long maximum) {
         if(!Float.isFinite(value)||value<0||value>1)throw new IllegalArgumentException("invalid normalized brightness");
         return Math.round((double)value*maximum);
@@ -38,13 +45,17 @@ public final class DirectBacklight {
         // A lower driver output can be an unreported vendor protection. Do not retry it.
         if(!close(actual,raw)){abandon(now,"driver_output_mismatch");return false;}
         if(owned()){status="direct_active";return true;}
-        if(!close(raw,units(framework,maximum))) {
+        long expected=units(framework,maximum);
+        // The verified Xiaomi compositor applies a small compensation before sysfs.
+        // Keep it bounded; never fit a guessed global transform from a single sample.
+        long tolerance=readback==null?1:Math.max(16,Math.round(expected*.02));
+        if(Math.abs(raw-expected)>tolerance) {
             stableAt=-1;status="backlight_mapping_mismatch";return false;
         }
         if(raw!=baseline){baseline=raw;stableAt=now;}
         if(stableAt<0)stableAt=now;
         if(now<retryAt||now-stableAt<1000){status="verifying_mapping";return false;}
-        status="direct_ready";return true;
+        baselineFramework=framework;status="direct_ready";return true;
         }
     }
     private void abandon(long now,String reason) throws IOException {
@@ -61,6 +72,7 @@ public final class DirectBacklight {
         if(owned()&&raw==last)return;
         Properties p=new Properties();p.setProperty("node",node.getName());p.setProperty("display",display);
         p.setProperty("boot",boot);p.setProperty("maximum",Long.toString(maximum));p.setProperty("last",Long.toString(raw));
+        p.setProperty("readback",readback==null?"sysfs":"mi");p.setProperty("systemRaw",Long.toString(baseline));p.setProperty("framework",Float.toString(baselineFramework));
         File tmp=File.createTempFile(".direct-",".tmp",journal.getParentFile());
         try {
             try(FileOutputStream out=new FileOutputStream(tmp)){p.store(out,"IAB direct output recovery");out.getFD().sync();}
@@ -74,18 +86,26 @@ public final class DirectBacklight {
         try(FileOutputStream out=new FileOutputStream(path)){out.write((value+"\n").getBytes(StandardCharsets.US_ASCII));}
     }
     /** Restore only our unchanged last write; never replace a newer system/user write. */
-    public static synchronized void restore(File root,File journal,String display,String boot,boolean on,boolean canRaise,float framework,float cap) throws IOException {
+    public static void restore(File root,File journal,String display,String boot,boolean on,boolean canRaise,float framework,float cap) throws IOException {
+        restore(root,journal,display,boot,on,canRaise,framework,cap,null);
+    }
+    public static synchronized void restore(File root,File journal,String display,String boot,boolean on,boolean canRaise,float framework,float cap,Readback readback) throws IOException {
         if(!journal.isFile())return;
         Properties p=new Properties();try(InputStream in=new FileInputStream(journal)){p.load(in);}
         try {
             if(!display.equals(p.getProperty("display"))||!boot.equals(p.getProperty("boot"))||!on)return;
             String name=p.getProperty("node","");if(!name.matches("[A-Za-z0-9_-]+"))return;
             File node=new File(root,name);long max=Long.parseLong(p.getProperty("maximum")),last=Long.parseLong(p.getProperty("last"));
-            long raw=Backlight.number(new File(node,"brightness")),actual=Backlight.number(new File(node,"actual_brightness"));
+            long raw=Backlight.number(new File(node,"brightness"));
+            long actual="mi".equals(p.getProperty("readback"))?(readback==null?-1:readback.read()):Backlight.number(new File(node,"actual_brightness"));
             if(max<2||max>1000000||last<1||last>max||Backlight.number(new File(node,"max_brightness"))!=max||raw!=last)return;
             // An unknown/lower driver output wins over recovery, including after a crash.
             if(!close(actual,raw))return;
             long target=units(Math.min(framework,cap),max);
+            float saved=Float.parseFloat(p.getProperty("framework","NaN"));
+            long original=Long.parseLong(p.getProperty("systemRaw","-1"));
+            if(Float.isFinite(saved)&&Math.abs(framework-saved)<.000001f&&original>0&&original<=max)
+                target=Math.min(original,units(cap,max));
             if(!canRaise)target=Math.min(target,raw);
             if(target>=1&&target!=raw)writeNode(new File(node,"brightness"),target);
         }catch(IllegalArgumentException e){throw new IOException("invalid backlight recovery data",e);}

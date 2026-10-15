@@ -42,6 +42,18 @@ public final class DirectBacklightTest {
             d.ready(16000,.1f);d.ready(17000,.1f);set(panel,"brightness",150);set(panel,"actual_brightness",150);
             try{d.write(.2f,1);throw new AssertionError("race must fail");}catch(java.io.IOException expected){}
             check(Files.readString(panel.resolve("brightness")).trim().equals("150"),"last-moment external write is preserved");
+            // The Qualcomm sysfs actual_brightness callback is a constant-zero stub.
+            // A verified adapter must use the separate read-only driver API instead.
+            final long[] driver={812};set(panel,"max_brightness",16383);set(panel,"brightness",812);set(panel,"actual_brightness",0);
+            var vendor=new DirectBacklight(root.toFile(),"panel0",journal.toFile(),"main","boot",()->driver[0]);
+            check(!vendor.ready(20000,.048902072f)&&vendor.ready(21000,.048902072f),"bounded compositor compensation with independent driver readback");
+            vendor.write(.04f,.4f);driver[0]=655;
+            check(vendor.ready(22000,.048902072f),"vendor readback validates raw write despite sysfs zero stub");
+            DirectBacklight.restore(root.toFile(),journal.toFile(),"main","boot",true,true,.048902072f,.4f,()->driver[0]);
+            check(Files.readString(panel.resolve("brightness")).trim().equals("812"),"unchanged framework restores exact original system node value");
+            vendor.released();driver[0]=812;vendor.ready(23000,.048902072f);vendor.ready(24000,.048902072f);vendor.write(.04f,.4f);
+            driver[0]=400;check(!vendor.ready(25000,.048902072f),"vendor thermal driver reduction must also yield");
+            driver[0]=-1;check(!vendor.ready(30000,.048902072f),"failed vendor readback never authorizes control");
             String dump="DisplayDeviceInfo{uniqueId=\"main\"} mBrightness=[0, 0.2, 1], mBacklight=[0, 0.2, 1] DisplayDeviceInfo{uniqueId=\"rear\"} mBrightness=[0, 1], mBacklight=[0.1, 0.9]";
             check(DirectBacklight.identityMapping(dump,"main"),"verified mapping accepted");
             check(!DirectBacklight.identityMapping(dump,"rear")&&!DirectBacklight.identityMapping(dump,"missing"),"nonidentity or missing panel rejected");

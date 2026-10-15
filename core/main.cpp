@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "model.hpp"
 #include "storage.hpp"
+#include "panel_read.hpp"
 #include <cmath>
 #include <fcntl.h>
 #include <iomanip>
@@ -14,6 +15,7 @@
 #include <unistd.h>
 using namespace brightness;
 int main(int argc,char**argv) {
+    if(argc==2&&std::string(argv[1])=="--panel-read"){std::cout<<readMainPanel()<<std::endl;return 0;}
     if(argc==4 && std::string(argv[1])=="--config") {
         try {
             const auto text=std::string(argv[3]);
@@ -64,6 +66,7 @@ int main(int argc,char**argv) {
                 if(line.size()>65536)throw std::runtime_error("command too large");
                 std::istringstream in(line);std::string cmd;in>>cmd;
                 auto end=[&](){std::string extra;if(in>>extra)throw std::runtime_error("trailing command arguments");};
+                if(cmd=="PANEL_READ") {end();std::cout<<readMainPanel()<<std::endl;continue;}
                 if(cmd=="USER") {
                     int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");end();
                     if(!hasUser||store.user!=user){store.user=user;hasUser=true;core.reset();core.learning=store.load(saveStatus);last={false,0,"user_changed"};}
