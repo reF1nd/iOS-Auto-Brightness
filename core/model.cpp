@@ -124,14 +124,15 @@ double Learning::target(double lux,const Profile& p,double baseScale) const {
 }
 double Learning::referenceTarget(double lux) const {
     const auto base=[](double l){return referenceBrightness(referenceNits(l));};
-    if(points.empty())return std::clamp(base(lux)+legacy_offset,0.0,1.0);
+    const double bound=std::log(4.0);
+    if(points.empty())return std::clamp(base(lux)*std::exp(std::clamp(legacy_offset/.3,-1.0,1.0)*bound),0.0,1.0);
     bool cached=fitted_offset==legacy_offset&&fitted_from.size()==points.size();
     for(size_t i=0;cached&&i<points.size();i++)cached=points[i].lux==fitted_from[i].lux&&points[i].value==fitted_from[i].value;
     if(cached)return interpolate(std::log1p(lux),fitted_x,fitted_y);
     // All samples contribute bounded residuals. A unit-weight zero-offset prior
     // keeps the preset curve authoritative; no sample is an interpolation anchor.
     std::vector<double> px,delta,xs,ys;
-    for(const auto& p:points){px.push_back(std::log1p(p.lux));delta.push_back(std::clamp(p.value-base(p.lux),-.3,.3));}
+    for(const auto& p:points){px.push_back(std::log1p(p.lux));delta.push_back(std::clamp(std::log(std::max(p.value,.00001)/std::max(base(p.lux),.00001)),-bound,bound));}
     constexpr int count=129;
     for(int i=0;i<count;i++) {
         double x=i*std::log1p(200000.0)/(count-1),sum=0,weight=1;
@@ -139,7 +140,7 @@ double Learning::referenceTarget(double lux) const {
             double distance=(x-px[j])/std::log(10.0),w=1/(1+distance*distance);
             sum+=w*delta[j];weight+=w;
         }
-        xs.push_back(x);ys.push_back(std::clamp(base(std::expm1(x))+std::clamp(legacy_offset+sum/weight,-.3,.3),0.0,1.0));
+        xs.push_back(x);ys.push_back(std::clamp(base(std::expm1(x))*std::exp(std::clamp(legacy_offset/.3*bound+sum/weight,-bound,bound)),0.0,1.0));
     }
     // Isotonic projection prevents contradictory observations from producing a
     // falling brightness curve. It does not force the curve through observations.
@@ -168,7 +169,7 @@ bool Controller::slider(int value,int64_t wallTime) {
     if(value<0||value>255||wallTime<=0)throw std::runtime_error("slider outside reference range");
     const int before=last_slider_;
     if(before<0){last_slider_=value;return false;}
-    if(!reference||!config.enabled||!config.learning_enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||smooth_<0||output_<0) {
+    if(!reference||!config.enabled||!config.learning_enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||rear_pending_||smooth_<0||output_<0) {
         last_slider_=value;return false;
     }
     if(std::abs(value-before)<10)return false;
@@ -177,6 +178,7 @@ bool Controller::slider(int value,int64_t wallTime) {
     return true;
 }
 void Controller::reset() {
+    rear_accepted_=-1;rear_candidate_=-1;rear_front_=-1;rear_since_=0;rear_pending_=false;
     last_slider_=-1;frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;solar_decay_=false;dark_pending_=false;dark_since_=-1;
     near_since_=-1;far_since_=-1;proximity_confirmed_=false;front_baseline_=-1;
@@ -186,7 +188,7 @@ void Controller::reset() {
 }
 void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
 bool Controller::learn(double lux,double value,int64_t time) {
-    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||smooth_<0||frame_.lux<0) return false;
+    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||rear_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
     learning.add(lux,value,time,!reference);if(!reference)hold(frame_.now);return true;
@@ -236,6 +238,19 @@ Output Controller::step(const Frame& f) {
     const bool dual=std::isfinite(f.front)&&f.front>=0&&f.front<=200000;
     const double frontLux=dual?f.front:lux;
     const double frontBaseline=dual?front_baseline_:smooth_;
+
+    // A stationary front with a pulsing rear must not drive repeated bright/dark
+    // cycles. Still accept a stable rear source, real front changes, or sunlight.
+    if(reference&&dual&&std::isfinite(f.back)&&f.back>=0) {
+        if(rear_accepted_<0||std::abs(std::log1p(frontLux)-std::log1p(rear_front_))>std::log(1.2)||lux>=config.high_lux_threshold) {
+            rear_accepted_=lux;rear_front_=frontLux;rear_candidate_=-1;rear_pending_=false;
+        } else if(std::abs(std::log1p(lux)-std::log1p(rear_accepted_))>std::log(1.25)) {
+            if(rear_candidate_<0||f.now<rear_since_||std::abs(std::log1p(lux)-std::log1p(rear_candidate_))>std::log(1.2)) {rear_candidate_=lux;rear_since_=f.now;}
+            rear_pending_=f.now-rear_since_<5000;
+            if(rear_pending_)lux=rear_accepted_;
+            else {rear_accepted_=lux;rear_candidate_=-1;}
+        } else {rear_accepted_=lux;rear_candidate_=-1;rear_pending_=false;}
+    } else {rear_accepted_=-1;rear_candidate_=-1;rear_front_=-1;rear_pending_=false;}
 
     // A covered rear sensor is normal on a desk. It can extend spike
     // confirmation, but must never cap a stable front-light measurement.
@@ -382,7 +397,7 @@ Output Controller::step(const Frame& f) {
         desired_=target;
     } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;solar_decay_=false;}
     output_=std::clamp(output_,f.minimum,cap);
-    return {true,output_,lowBattery?"low_battery_limit":(dark_pending_?"ambient_guard":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto"))))};
+    return {true,output_,lowBattery?"low_battery_limit":(rear_pending_?"rear_sensor_settling":(dark_pending_?"ambient_guard":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto")))))};
 }
 std::string jsonString(const std::string& s) {
     std::ostringstream o;o<<'"';for(unsigned char c:s) {switch(c){case '"':o<<"\\\"";break;case '\\':o<<"\\\\";break;case '\n':o<<"\\n";break;case '\r':o<<"\\r";break;case '\t':o<<"\\t";break;default:if(c<32)o<<"\\u"<<std::hex<<std::setw(4)<<std::setfill('0')<<static_cast<int>(c)<<std::dec;else o<<c;}}o<<'"';return o.str();

@@ -67,9 +67,12 @@ public:
     double alpha() const { return alpha_; }
     double desired() const { return desired_; }
     double nightScale() const;
-    bool ambientGuard() const { return dark_pending_; }
+    bool ambientGuard() const { return dark_pending_||rear_pending_; }
     bool settled() const { return dark_since_<0 && output_>=0 && std::abs(output_-desired_)<.00001; }
 private:
+    double rear_accepted_=-1,rear_candidate_=-1,rear_front_=-1;
+    int64_t rear_since_=0;
+    bool rear_pending_=false;
     int last_slider_=-1;
     Frame frame_;
     double smooth_=-1, output_=-1, candidate_=-1;

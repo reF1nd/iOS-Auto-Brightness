@@ -29,6 +29,19 @@ int main(){
     auto text=store.encode(l);auto restored=store.decode(text);
     check(text.rfind("IAB_CURVE_OBSERVATIONS_V2",0)==0&&restored.points.size()==3,"versioned observation storage");
     check(restored.referenceTarget(10)==l.referenceTarget(10),"restart reconstructs identical preference curve");
+    Learning dimPreference;dimPreference.add(70.51677506,.0006866859953,1000,false);
+    check(dimPreference.referenceTarget(6.488)>.01,"dark preference must not collapse adjacent lux to zero");
+    Controller rear;rear.reference=true;rear.learning=dimPreference;rear.profile={"test",{1,3500},{.001,1}};
+    Frame r;r.now=1000;r.automatic=true;r.screen=true;r.front=6.488;r.lux=6.488;r.back=0;r.temp=30;r.battery=80;r.minimum=.000366256;r.maximum=1;
+    const double held=rear.step(r).value;
+    for(int i=1;i<=300;i++) {
+        r.now+=100;r.back=(i/20)%2?25:0;r.lux=std::max(r.front,r.back);
+        auto out=rear.step(r);check(out.apply&&std::abs(out.value-held)<.00001,"stationary front and pulsing rear cannot flash output");
+    }
+    for(int i=0;i<100;i++){r.now+=100;r.back=25;r.lux=25;rear.step(r);}
+    check(rear.smoothLux()>24,"stable rear still participates after confirmation");
+    r.now+=100;r.front=.1;r.back=.1;r.lux=.1;rear.step(r);
+    check(!rear.ambientGuard(),"real front change is not delayed by rear-only confirmation");
     Controller c;c.reference=true;c.profile={"test",{1,3500},{.001,1}};
     Frame f;f.now=1000;f.automatic=true;f.screen=true;f.lux=10;f.current=.8;f.minimum=.001;f.maximum=1;f.temp=30;f.battery=80;
     auto o=c.step(f);check(o.apply&&o.value<.08&&o.reason=="reference_warm_start","wake uses current curve, not stale bright framework");
