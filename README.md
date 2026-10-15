@@ -4,7 +4,7 @@
 
 支持 KernelSU、APatch、Magisk 的 Android 自动亮度模块重实现项目，重点是平滑调光、可靠的系统控制权交接，以及可跨重启保留的环境照度与用户亮度偏好。
 
-**当前为 v7.0.0-beta.7：核心、Android 桥接、KernelSU 服务和 WebUI 已实现，Actions 生成可安装 ZIP，正在进行目标设备验收。** 自动测试通过不等于全部真机场景通过。项目名称描述调光体验目标，不表示使用或复现了 Apple 的原生算法。
+**当前为 v7.0.0-beta.7：核心、Android 桥接、Root 模块服务和 WebUI 已实现，Actions 生成可安装 ZIP，正在进行目标设备验收。** 自动测试通过不等于全部真机场景通过。项目名称描述调光体验目标，不表示使用或复现了 Apple 的原生算法。
 
 ## 兼容范围
 
@@ -29,7 +29,7 @@ Android 12（API 31）及以上，不限制品牌、ROM 或分辨率；ZIP 同�
 
 构建、自动测试及工作流检查统一由 [GitHub Actions](https://github.com/reF1nd/iOS-Auto-Brightness/actions) 执行。详见 [贡献约定](CONTRIBUTING.md)。
 
-CI 执行 C++ 算法与真实进程持久化测试、ASan/UBSan 检查、Java 事件策略测试、Android 四种 ABI / DEX 编译、ShellCheck、WebUI 语法检查及打包验证。所有任务通过后上传 `kernelsu-module` artifact，包含模块 ZIP 和 SHA-256。
+CI 执行 C++ 算法与真实进程持久化测试、ASan/UBSan 检查、Java 事件策略测试、Android 四种 ABI / DEX 编译、ShellCheck、WebUI 联动测试、Android 12/15 模拟器观察模式运行及打包验证。所有任务通过后上传 `kernelsu-module` artifact，包含模块 ZIP 和 SHA-256。
 
 CI 无法替代真机亮度、传感器、温控和耗电验收；具体记录见 [验证记录](docs/VALIDATION.md)。
 

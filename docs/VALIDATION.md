@@ -65,3 +65,26 @@
 ## 仍存在的界面同步限制
 
 刚进入暗处时，系统亮度条与实际屏幕亮度可能不一致。模块使用临时亮度请求，系统设置值与实际输出可以不同；本轮没有实现系统亮度条同步，不能将其列为已修复。该现象与暗处样本被过滤、锁屏后偏好失效分别记录。
+
+## beta.7 功能补全与通用适配（2026-10-15）
+
+代码/工作流提交 `a782cdfa191151a1802012f8051c00e4877ad9ae`，完整 [Actions 38703061244](https://github.com/reF1nd/iOS-Auto-Brightness/actions/runs/38703061244) 成功（10 个任务）：工作流检查、核心测试与 ASan/UBSan、Java 桥接及策略测试、四种 ABI 构建、两组模拟器运行、脚本/WebUI 检查与打包。
+
+新增回归覆盖：配置原始文本/表单/范围滑块联动、未保存阳光曲线、离线 UI 与配置保存、坏配置拒绝且原文件不变、离线 CLI 无需桥接/标定、物理屏幕身份隔离、系统亮度与 HAL 背光坐标不同、校准变化/无校准降级、无 Sensor 对象时唯一名称发现、表面温度别名与 SoC 排除、窗口覆盖状态解析及未知状态拒绝。
+
+模拟器（Google APIs x86_64）实际运行 Actions 生成的原生核心和 DEX，使用观察模式，验证桥接持续 active、SettingsProvider 自动模式读取、心跳持续更新、PowerManager 窗口覆盖回退识别为无覆盖：
+
+- Android 12 / API 31：无 nits 校准，正确选择通用配置并禁用 nits 学习；没有有效光感输入，核心报告 `sensor_unavailable` 并释放控制。
+- Android 15 / API 35：无 nits 校准，正确选择通用配置并禁用 nits 学习；模拟光感驱动核心进入 `auto`。观察模式不写屏幕，不作为实际调光/学习或 Root 管理器安装验收。
+
+早期模拟器流程曾因 SDK 镜像许可未接受、AVD 创建与模拟器查找目录不一致而失败/取消。最终流程统一显式 AVD 目录、接受 SDK 安装许可并限制连接等待时间，以上成功运行已包含这些修正。
+
+安装产物 `iOS-Auto-Brightness-v7.0.0-beta.7-a782cdfa.zip`，SHA-256：
+
+```text
+7fbd25fb0791665516d9f7795c8d79695a3c813d273aeb801854c8c999166b7f
+```
+
+小米 17 Pro Max / Android 17 HyperOS 4 / KernelSU：通过原生管理器安装成功，ARM64 选择和执行权限正确；停服期间独立诊断可读取配置校验、进程/安装文件和系统状态，并明确标记缓存离线。之后在不重启手机的情况下启动新监督进程，`version=v7.0.0-beta.7`、`bridge=active`、`calibration=system_calibration`、`profile=altdb-main-hyperos4`、`learning_available=true`、`storage=loaded`。原有 5 条记录恢复，配置、学习及备份文件 SHA-256 与切换前完全一致。活动模块管理入口同步更新；整机 boot ID 未改变。
+
+本轮手机保持熄屏，因此真机仅确认启动、校准、恢复、诊断和熄屏释放控制，不宣称已复验亮屏拖动、真实阳光、重启或长期耗电。其他品牌、其他 Android 版本、Magisk/APatch 安装及折叠屏切换仍需对应设备实测；四种 ABI 编译成功不等于全机型验收。兼容基线及明确降级边界见 [兼容性说明](COMPATIBILITY.md)。
