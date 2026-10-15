@@ -487,7 +487,7 @@ public final class Bridge implements SensorEventListener {
                 learningLux.reset();manual.cancel();
                 result=request("USER "+userSerial);
                 File legacy=new File(state,"legacy-offset.dat");
-                if(user==0&&result.optString("storage").equals("new")&&legacy.isFile())result=request("MIGRATE "+JSONObject.quote(legacy.getPath()));
+                if(user==0&&(learningScope.isEmpty()||learningScope.equals("default"))&&result.optString("storage").equals("new")&&legacy.isFile())result=request("MIGRATE "+JSONObject.quote(legacy.getPath()));
             }
             boolean automatic=mode(user)==1;
             // HyperOS can report STATE_ON while an AOD pulse is still dozing.
@@ -515,7 +515,7 @@ public final class Bridge implements SensorEventListener {
             thermal(now);
             try{thermalStatus=power.getCurrentThermalStatus();}catch(Exception e){thermalStatus=-1;}
             brightnessMaxReason=hasField(info,"brightnessMaxReason")?integer(info,"brightnessMaxReason"):-1;
-            protectionReason=protection.update(now,thermalStatus,brightnessMaxReason);
+            protectionReason=protection.update(now,thermalStatus,ProtectionPolicy.capReason(android.os.Build.VERSION.SDK_INT,hasField(info,"brightnessMaxReason"),brightnessMaxReason));
             blocked=blocked||!protectionReason.isEmpty();
             if(!protectionReason.isEmpty()){clearOverride();pending=null;manual.cancel();lastEvent=System.currentTimeMillis();learningLux.reset();}
             // On-change light sensors may be silent while stable; registration stays active.
@@ -541,7 +541,7 @@ public final class Bridge implements SensorEventListener {
                     call(display,"setTemporaryBrightness",new Class<?>[]{int.class,float.class},0,target);
                     lastWrite=target;overridden=true;lastWriteAt=now;
                 }
-                else if(Math.abs(target-current)>Math.max(.0005f,target*.1f)&&!blocked)requestRecovery(now);
+                else if(brightnessMaxReason==0&&Math.abs(target-current)>Math.max(.0005f,target*.1f)&&!blocked)requestRecovery(now);
             }else clearOverride();
             bridgeError="";
             boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&now-changedAt>5000&&luxSource.equals("front")&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
@@ -549,6 +549,7 @@ public final class Bridge implements SensorEventListener {
             if(!protectionReason.isEmpty())result.put("reason",protectionReason).put("apply",false);
             result.put("boot_id",bootId).put("bridge_pid",android.os.Process.myPid())
                 .put("bridge_start",Health.processStart(android.os.Process.myPid())).put("core_start",Health.processStart(result.optLong("core_pid",-1)))
+                .put("protection_signals",hasField(info,"brightnessMaxReason")?"thermal_and_cap_reason":"thermal_and_system_cap_only")
                 .put("thermal_status",thermalStatus).put("brightness_max_reason",brightnessMaxReason).put("protection",protectionReason.isEmpty()?"clear":protectionReason)
                 .put("manual_learning_available",true).put("manual_learning_armed",manual.until>now).put("learning_scope",learningScope).put("sensor_selection",sensorSelectionStatus)
                 .put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)

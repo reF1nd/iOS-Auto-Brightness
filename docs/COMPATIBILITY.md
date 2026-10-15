@@ -10,11 +10,11 @@
 
 - 必需：默认屏幕、临时亮度设置、亮度上下限、当前亮度、当前用户和系统设置读取。失败时不接管屏幕，独立诊断和配置修复仍可用。
 - 系统校准：只读取当前物理屏幕对应的 `mNits` 与 `mBrightness`，不把 HAL `mBacklight` 当成系统亮度。校验长度、有限数值、范围和严格递增。不同面板、不同标定数据使用独立的学习身份；原小米映射完整匹配时保留旧身份和学习记录。
-- 无校准：使用显式标记的通用比例曲线，仍遵守系统上下限。亮度事件的 nits 无法可靠换算，学习功能禁用并解释原因；不会把其他机型标定套上来。通用曲线需要用户实测，不保证主观亮度与已校准设备相同。
-- 学习：需要系统真实调节事件和校准映射。事件缺失或字段不兼容会报告错误，不猜测用户拖动，不保存虚构样本。
+- 无校准：使用显式标记的通用比例曲线，仍遵守系统上下限。亮度事件的 nits 无法可靠换算，自动事件学习禁用并解释原因，仍可显式开启一次调节学习；不会把其他机型标定套上来。通用曲线需要用户实测，不保证主观亮度与已校准设备相同。
+- 自动学习：需要系统真实调节事件和校准映射。事件缺失或字段不兼容会报告错误；显式学习回退见下方 beta.8 说明。
 - 窗口亮度：优先框架标记；没有厂商扩展标记时异步读取 PowerManager 的主屏窗口覆盖状态。无法识别或状态过期时暂停接管；轮询路径存在检测延迟，需实测前台应用自设亮度场景。
 - 光感：默认前置 → 独立后置 → 唯一可读 sysfs/IIO 输入 → 带注册周期和新鲜度验证的 dumpsys 读数。没有默认 Sensor 对象时可发现唯一前置名称；多个候选不猜测。
-- 温度：识别 battery/batt、skin、shell、quiet、back 表面传感器；SoC/CPU/GPU 不使用表面 45°C 阈值。系统严重温控状态也会禁止阳光增强。温度不可用不增强，亮度始终服从系统上限。
+- 温度：识别 battery/batt、skin、shell、quiet、back 表面传感器；SoC/CPU/GPU 不使用表面 45°C 阈值。系统热状态从 LIGHT 开始即释放控制并暂停学习。温度不可用不增强，亮度始终服从系统上限。
 - 当前逻辑屏幕更换物理面板时释放控制、重启校准。尚无折叠屏真机验收；不控制外接屏和副屏。
 
 ## 管理和排障
@@ -46,3 +46,5 @@ sh /data/adb/modules/ios_auto_brightness/control.sh config-read
 前置、后置和 sysfs/dumpsys 来源均可学习，按面板、用户和来源隔离，默认前置继续使用原文件。切换来源不覆盖旧记录。WebUI 光感选择写入私有 `sensors.conf`，支持 `front=完整名称`、`back=完整名称`（`none` 禁用）、`sysfs=/sys/.../lux` 或 `in_illuminance_input`；留空自动发现。没有显式前置选择时兼容 `persist.sys.display.als_name`，匹配失败明确报告并回退系统默认传感器。指定 sysfs 时优先使用该照度节点，失败不会静默切换另一来源。
 
 离线 `control.sh log-read` 按时间拼接轮转备份和当前日志的最近 80 行；`log-clear` 清除当前日志及备份，与轮转互斥。健康诊断检查进程身份、启动时间、同次开机和心跳新鲜度；CPU 分开报告 Java 桥接与 native 核心的进程平均占用（不含 supervisor 和短命 dumpsys 子进程）。
+
+Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已知能力缺失不会冒充字段读取成功：状态显示 `thermal_and_system_cap_only`，使用系统热状态及实时亮度上下限保护，禁用丢失输出的自动重试。Android 13+ 应有该字段而缺失、或热状态查询失败时，暂停接管。接口依据：[Android 12L](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-12.1.0_r1/core/java/android/hardware/display/BrightnessInfo.java)、[Android 13](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-13.0.0_r1/core/java/android/hardware/display/BrightnessInfo.java)。

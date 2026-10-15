@@ -221,6 +221,7 @@ jobs:
           shellcheck --severity=warning module/*.sh
           node --check module/webroot/app.js
           node --test tests/webui_test.mjs
+          python3 tests/log_tools_test.py
       - name: Package and validate archive
         run: python3 tools/package.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

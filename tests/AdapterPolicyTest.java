@@ -16,7 +16,7 @@ public final class AdapterPolicyTest {
         check(LuxFallback.parseLux("nan")<0&&LuxFallback.parseLux("Infinity")<0&&LuxFallback.parseLux("1 2")<0,"invalid data");
         String dump="ALS: last 3 events\n\t1 (ts=14.0, wall=13:08:09.415) 10.00, \n\t2 (ts=19.5, wall=13:08:14.915) 0.00, \n\t3 (ts=21.0, wall=13:08:16.415) 999, \nRear ALS: last 1 events\n\t1 (ts=19.9, wall=13:08:15.315) 99, \n";
         var sample=LuxFallback.fromDump(dump,"ALS",20000,15000);
-        check(sample!=null&&sample.lux==0&&sample.at==19500,"exact sensor, newest nonfuture sample");
+        check(sample!=null&&sample.lux==0&&sample.at==19500&&sample.source.equals("dumpsys:ALS"),"exact sensor, newest nonfuture sample");
         check(LuxFallback.fromDump(dump,"ALS",40000,15000)==null,"stale dump");
         check(LuxFallback.fromDump(dump,"ALS",20000,19800)==null,"dump predates registration");
         check(LuxFallback.fromDump(dump,"Missing",20000,0)==null,"no ambiguous match");

@@ -7,9 +7,14 @@ import java.util.regex.*;
 public final class ProtectionPolicy {
     private long clearAt=-1;
     private boolean held=false;
+    public static int capReason(int api,boolean present,int value) {
+        // Android 12/12L precede BrightnessInfo.brightnessMaxReason. This is an
+        // absent capability, not a successful probe; recovery stays disabled.
+        return !present&&api<=32?0:value;
+    }
     public String update(long now,int thermalStatus,int maxReason) {
-        String reason=thermalStatus<0||maxReason<0?"protection_unknown":
-            maxReason!=0?"system_brightness_limit":thermalStatus>0?"system_thermal":"";
+        String reason=thermalStatus>0?"system_thermal":maxReason>0?"system_brightness_limit":
+            thermalStatus<0||maxReason<0?"protection_unknown":"";
         if(!reason.isEmpty()){held=true;clearAt=-1;return reason;}
         if(held) {
             if(clearAt<0)clearAt=now;

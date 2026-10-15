@@ -4,6 +4,9 @@ import org.ref1nd.brightness.SensorChoice;
 public final class ProtectionPolicyTest {
     static void check(boolean b,String message){if(!b)throw new AssertionError(message);}
     public static void main(String[] args) throws Exception {
+        check(ProtectionPolicy.capReason(31,false,-1)==0,"Android 12 absent capability");
+        check(ProtectionPolicy.capReason(32,true,1)==1,"backported reason wins");
+        check(ProtectionPolicy.capReason(33,false,-1)==-1,"newer unexpected absence fails closed");
         var p=new ProtectionPolicy();
         check(p.update(0,0,0).isEmpty(),"initial clear");
         check(p.update(1,1,0).equals("system_thermal"),"even light thermal status yields");

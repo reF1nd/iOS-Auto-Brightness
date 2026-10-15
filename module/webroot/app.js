@@ -149,8 +149,8 @@ $('save').onclick=()=>action(async()=>{if(rawInvalid)throw new Error('请先修�
 $('saveRaw').onclick=()=>action(()=>save($('config').value));
 $('refresh').onclick=()=>refresh(true);
 $('defaults').onclick=()=>action(async()=>{dirty=true;setConfig(await exec(`cat ${quote(`${root}/default.conf`)}`));note('已载入默认值，点击保存并应用后生效。');});
-$('clear').onclick=()=>{if(confirm('清除当前用户的全部学习记录？基础曲线保持不变。'))action(async()=>{await ctl('learn-clear');await refresh();note('学习记录已清除并保存。');});};
-$('export').onclick=()=>action(async()=>{const data=(await ctl('learn-export')).data;const url=URL.createObjectURL(new Blob([data],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download='ios-brightness-learning.dat';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);note('已导出当前用户学习数据。');});
+$('clear').onclick=()=>{if(confirm('清除当前用户、当前光感来源的学习记录？基础曲线保持不变。'))action(async()=>{await ctl('learn-clear');await refresh();note('学习记录已清除并保存。');});};
+$('export').onclick=()=>action(async()=>{const data=(await ctl('learn-export')).data;const url=URL.createObjectURL(new Blob([data],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download='ios-brightness-learning.dat';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);note('已导出当前用户及光感来源的学习数据。');});
 $('import').onchange=()=>action(async()=>{const file=$('import').files[0];if(!file)return;if(file.size>32768)throw new Error('导入文件过大');await ctl('learn-import',base64(await file.text()));$('import').value='';await refresh();note('学习数据已验证并导入。');});
 $('diagnose').onclick=()=>action(async()=>{$('diagnostics').textContent=await exec(`sh ${quote(`${root}/check_status.sh`)}`);});
 $('logs').onclick=()=>action(async()=>{$('log').textContent=await exec(`sh ${quote(`${root}/control.sh`)} log-read`);});

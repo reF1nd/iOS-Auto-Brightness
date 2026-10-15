@@ -52,7 +52,7 @@ public final class LuxFallback {
             try {
                 double ts=Double.parseDouble(m.group(1))*1000;
                 if(!Double.isFinite(ts)||ts<0||ts>Long.MAX_VALUE)continue;
-                Sample sample=new Sample(parseLux(m.group(2)),(long)ts,"dumpsys");
+                Sample sample=new Sample(parseLux(m.group(2)),(long)ts,"dumpsys:"+sensorName);
                 if(sample.usable(now,sessionStart)&&(latest==null||sample.at>latest.at))latest=sample;
             }catch(RuntimeException ignored){}
         }

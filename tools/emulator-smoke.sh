@@ -29,7 +29,7 @@ adb shell 'mkdir -p /data/local/tmp/iab-module/bin /data/local/tmp/iab-state; ch
 adb push module/. /data/local/tmp/iab-module/ >/dev/null
 adb push build/artifacts/core/ios_brightness_daemon /data/local/tmp/iab-module/bin/ >/dev/null
 adb push build/artifacts/bridge/bridge.jar /data/local/tmp/iab-module/ >/dev/null
-adb shell 'chmod 755 /data/local/tmp/iab-module/bin/ios_brightness_daemon; cp /data/local/tmp/iab-module/default.conf /data/local/tmp/iab-state/config.conf; settings put system screen_brightness_mode 1; input keyevent KEYCODE_WAKEUP'
+adb shell 'chmod 755 /data/local/tmp/iab-module/bin/ios_brightness_daemon; cp /data/local/tmp/iab-module/default.conf /data/local/tmp/iab-state/config.conf; settings put system screen_brightness_mode 1; settings put system screen_off_timeout 600000; input keyevent KEYCODE_WAKEUP'
 adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar nohup setsid app_process /system/bin org.ref1nd.brightness.Bridge /data/local/tmp/iab-module /data/local/tmp/iab-state --observe > /data/local/tmp/iab-state/bridge.log 2>&1 < /dev/null & sleep 2'
 for _ in $(seq 1 15); do
   if adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-status.json 2>/dev/null; then break; fi
@@ -81,3 +81,30 @@ assert s.get('ok') and s.get('protection')=='clear',s
 assert s.get('core_pid',0)>0 and s.get('bridge_pid',0)>0 and s.get('boot_id'),s
 assert s.get('cpu_core_percent',-1)>=0,s
 PY
+adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar app_process /system/bin org.ref1nd.brightness.Bridge health /data/local/tmp/iab-state /data/local/tmp/iab-module' > build/smoke-health.json
+python3 - <<'PY'
+import json
+s=json.load(open('build/smoke-health.json'))
+assert s.get('heartbeat')=='fresh' and s.get('bridge_process')=='alive' and s.get('core_process')=='alive',s
+# No supervisor in this CI observation launch; healthy must not be falsely reported.
+assert s.get('health')=='attention_required',s
+PY
+
+# Exercise explicit learning without relying on calibrated nits or OEM event APIs.
+adb emu sensor set light 100
+armed=0
+for _ in $(seq 1 30); do
+  if adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar app_process /system/bin org.ref1nd.brightness.Bridge ctl learn-arm' > build/smoke-arm.json 2>/dev/null; then armed=1; break; fi
+  sleep 2
+done
+[[ "$armed" == 1 ]]
+adb shell settings put system screen_brightness 171
+sleep 5
+adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-learned.json
+python3 - <<'PYCODE'
+import json
+s=json.load(open('build/smoke-learned.json'))
+assert s.get('ok') and s.get('storage')=='saved' and s.get('points'),s
+assert any(abs(p['lux']-100)<1 for p in s['points']),s
+assert not s.get('manual_learning_armed'),s
+PYCODE
