@@ -72,6 +72,7 @@ public final class Bridge implements SensorEventListener {
     String manualSlider=null, manualAdjustment=null;
     int thermalStatus=-1, brightnessMaxReason=-1;
     DirectBacklight direct;
+    boolean frameBlocked=true;
     String outputStatus="backlight_unavailable";
     boolean outputProbeBusy=false, outputSafe=false;
     long outputProbeAt=-10000, outputVerifiedAt=-10000, outputEpoch=0;
@@ -624,7 +625,9 @@ public final class Bridge implements SensorEventListener {
     }
     static String rootCause(Throwable e){while(e.getCause()!=null)e=e.getCause();return e.toString();}
     boolean driverLearningReady(long now) {
-        return observe||direct==null||direct.learning.learningReady(now);
+        // The core also rejects EVENT while the latest FRAME is blocked. Retain
+        // intent until mapping/protection verification has cleared that frame.
+        return !frameBlocked&&(observe||direct==null||direct.learning.learningReady(now));
     }
     void tick() {
         if(closing.get())return;
@@ -681,6 +684,7 @@ public final class Bridge implements SensorEventListener {
             boolean directBlocked=!directReady||brightnessMaxReason<0||!outputSafe||now-outputVerifiedAt>2000;
             boolean learningBlocked=blocked||!protectionReason.isEmpty();
             blocked=learningBlocked||(!observe&&directBlocked);
+            frameBlocked=blocked;
             if(!protectionReason.isEmpty()){eventStatus="paused_system_protection";clearOverride();pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();learningLux.reset();}
             // On-change light sensors may be silent while stable; registration stays active.
             float primary=frontReading.effective(now), backLux=backReading.effective(now);
