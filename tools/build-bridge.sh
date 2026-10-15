@@ -9,7 +9,8 @@ javac -source 17 -target 17 -encoding UTF-8 -cp "$ANDROID_HOME/platforms/android
 jar --create --file build/bridge/classes.jar -C build/bridge/classes .
 "$ANDROID_HOME/build-tools/35.0.0/d8" --min-api 28 --lib "$ANDROID_HOME/platforms/android-35/android.jar" --output build/bridge/dex build/bridge/classes.jar
 jar --create --file build/bridge/bridge.jar -C build/bridge/dex classes.dex
-javac -cp build/bridge/classes -d build/bridge/test-classes tests/EventGateTest.java tests/LightReadingTest.java tests/AdapterPolicyTest.java
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/EventGateTest.java tests/LightReadingTest.java tests/AdapterPolicyTest.java tests/LearningLuxTest.java
 java -cp build/bridge/classes:build/bridge/test-classes EventGateTest
 java -cp build/bridge/classes:build/bridge/test-classes LightReadingTest
 java -cp build/bridge/classes:build/bridge/test-classes AdapterPolicyTest
+java -cp build/bridge/classes:build/bridge/test-classes LearningLuxTest

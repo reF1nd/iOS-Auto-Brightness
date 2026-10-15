@@ -60,6 +60,7 @@ public final class Bridge implements SensorEventListener {
     Sensor front, back, proximity;
     float frontLux=-1;
     final LightReading backReading=new LightReading(), frontReading=new LightReading();
+    final LearningLux learningLux=new LearningLux();
     final PollCadence cadence=new PollCadence();
     final Runnable tickTask=this::tick;
     final AtomicBoolean fallbackBusy=new AtomicBoolean();
@@ -80,6 +81,7 @@ public final class Bridge implements SensorEventListener {
     int battery=-1;
     boolean charging=false;
     JSONObject pending;
+    float lastLearningLux=-1, lastFrameworkLux=-1;
     String eventStatus="waiting", sensorStatus="waiting", previousReason="", bridgeError="", lastEventRejection="";
     int dropped=0;
     List<File> thermalFiles=new ArrayList<>();
@@ -198,7 +200,11 @@ public final class Bridge implements SensorEventListener {
         },handler);
         IntentFilter filter=new IntentFilter();
         for(String action:new String[]{Intent.ACTION_SCREEN_ON,Intent.ACTION_SCREEN_OFF,Intent.ACTION_BATTERY_CHANGED,Intent.ACTION_TIME_CHANGED,Intent.ACTION_TIMEZONE_CHANGED})filter.addAction(action);
-        try{context.registerReceiver(new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(Intent.ACTION_TIMEZONE_CHANGED.equals(i.getAction()))TimeZone.setDefault(null);wake();}},filter);}
+        try{context.registerReceiver(new BroadcastReceiver(){public void onReceive(Context c,Intent i){
+            if(Intent.ACTION_TIMEZONE_CHANGED.equals(i.getAction()))TimeZone.setDefault(null);
+            if(Intent.ACTION_TIME_CHANGED.equals(i.getAction())){learningLux.reset();pending=null;lastEvent=System.currentTimeMillis();}
+            wake();
+        }},filter);}
         catch(Exception e){System.err.println("broadcast listener unavailable: "+rootCause(e));}
         new Thread(this::serve,"iab-control").start();
         Thread watchdog=new Thread(()->{
@@ -226,6 +232,7 @@ public final class Bridge implements SensorEventListener {
         }
     }
     void registerLight(Sensor sensor,LightReading reading,int period) {
+        if(reading==frontReading){learningLux.reset();pending=null;}
         if(sensor!=null)sensors.unregisterListener(this,sensor);
         boolean ok=sensor!=null&&sensors.registerListener(this,sensor,period,handler);
         reading.registration(ok,sensor!=null&&sensor.getReportingMode()==Sensor.REPORTING_MODE_ON_CHANGE);
@@ -241,6 +248,7 @@ public final class Bridge implements SensorEventListener {
             sensorStatus=frontReading.isRegistered()?front.getName():"front_unavailable";
         }else {
             sensors.unregisterListener(this);frontReading.registration(false,false);backReading.registration(false,false);
+            learningLux.reset();pending=null;
             sensorStatus="suspended";fallbackStatus="idle";
         }
         registered=wanted;
@@ -291,7 +299,7 @@ public final class Bridge implements SensorEventListener {
         if(!registered||e.values.length==0)return;
         float v=e.values[0];if(!Float.isFinite(v)||v<0)return;
         boolean changed=false;
-        if(e.sensor==front){changed=PollCadence.changed(v,frontLux);frontLux=v;frontAt=SystemClock.elapsedRealtime();frontReading.update(v,frontAt);}
+        if(e.sensor==front){changed=PollCadence.changed(v,frontLux);frontLux=v;frontAt=SystemClock.elapsedRealtime();frontReading.update(v,frontAt);learningLux.observe(v,frontAt,System.currentTimeMillis());}
         else if(e.sensor==back){changed=!LuxFallback.valid(frontReading.effective(SystemClock.elapsedRealtime()))&&PollCadence.changed(v,backReading.raw());backReading.update(v,SystemClock.elapsedRealtime());}
         else if(e.sensor==proximity){boolean value=v<Math.min(5,proximity.getMaximumRange());changed=near!=value;near=value;}
         if(changed)wake();
@@ -339,28 +347,32 @@ public final class Bridge implements SensorEventListener {
     void events(long now,boolean canLearn) {
         try {
             List<?> list=(List<?>)call(display,"getBrightnessEvents",new Class<?>[]{});
-            long since=lastEvent,max=lastEvent;Object newest=null;
+            long since=lastEvent,max=lastEvent;Object newest=null;float chosenLux=-1;
+            long eventNow=SystemClock.elapsedRealtime(), wallNow=System.currentTimeMillis();
             for(Object e:list) {
                 long ts=time(e,"timeStamp");max=Math.max(max,ts);
                 if(ts<=since)continue;
                 float[] lux=(float[])e.getClass().getField("luxValues").get(e);
                 long[] samples=(long[])e.getClass().getField("luxTimestamps").get(e);
-                String rejection=EventGate.rejection(ts,since,System.currentTimeMillis(),integer(e,"userId"),user,string(e,"uniqueDisplayId"),displayId,lux,samples,number(e,"brightness"),number(e,"powerBrightnessFactor"),flag(e,"reduceBrightColors"),canLearn);
+                String rejection=EventGate.rejection(ts,since,wallNow,integer(e,"userId"),user,string(e,"uniqueDisplayId"),displayId,lux,samples,number(e,"brightness"),number(e,"powerBrightnessFactor"),flag(e,"reduceBrightColors"),canLearn);
+                float direct=learningLux.atEvent(ts,eventNow,wallNow);
+                if(rejection.isEmpty()&&direct<0)rejection="direct_lux_history";
                 if(rejection.isEmpty()) {
-                    if(newest==null||ts>time(newest,"timeStamp"))newest=e;
+                    if(newest==null||ts>time(newest,"timeStamp")){newest=e;chosenLux=direct;}
                 }else {dropped++;lastEventRejection=rejection;}
             }
             lastEvent=max;
             if(newest!=null) {
                 float[] lux=(float[])newest.getClass().getField("luxValues").get(newest);
-                pending=new JSONObject().put("time",time(newest,"timeStamp")).put("lux",lux[lux.length-1]).put("value",toBacklight(number(newest,"brightness")));
+                lastFrameworkLux=lux[lux.length-1];lastLearningLux=chosenLux;
+                pending=new JSONObject().put("time",time(newest,"timeStamp")).put("lux",chosenLux).put("value",toBacklight(number(newest,"brightness")));
                 pendingAt=now;eventStatus="pending";request("HOLD "+now);clearOverride();
             }
             if(pending!=null&&now-pendingAt>=1500) {
-                if(canLearn) {
+                if(canLearn&&learningLux.stillStable(pending.getLong("time"),(float)pending.getDouble("lux"),eventNow,wallNow)) {
                     JSONObject learned=request("EVENT "+pending.getLong("time")+" "+pending.getDouble("lux")+" "+pending.getDouble("value"));
                     eventStatus=learned.has("accepted")?"rejected_unstable":"saved";
-                }else eventStatus="discarded_state_changed";
+                }else eventStatus="discarded_state_or_lux_changed";
                 pending=null;
             }
         }catch(Exception e){
@@ -377,6 +389,7 @@ public final class Bridge implements SensorEventListener {
             if(currentSerial<0)throw new IOException("user serial unavailable");
             if(currentUser!=user||currentSerial!=userSerial) {
                 clearOverride();user=currentUser;userSerial=currentSerial;pending=null;lastEvent=System.currentTimeMillis();
+                learningLux.reset();
                 result=request("USER "+userSerial);
                 File legacy=new File(state,"legacy-offset.dat");
                 if(user==0&&result.optString("storage").equals("new")&&legacy.isFile())result=request("MIGRATE "+JSONObject.quote(legacy.getPath()));
@@ -401,6 +414,7 @@ public final class Bridge implements SensorEventListener {
             thermal(now);
             // On-change light sensors may be silent while stable; registration stays active.
             float primary=frontReading.effective(now), backLux=backReading.effective(now);
+            learningLux.observe(primary,now,System.currentTimeMillis());
             if(registered&&!LuxFallback.valid(primary)&&!LuxFallback.valid(backLux))requestFallback(now);
             LuxFallback.Sample selected=LuxFallback.select(primary,backLux,fallbackSample,now,sensorSession);
             float lux=registered?selected.lux:-1;luxSource=registered?selected.source:"suspended";
@@ -420,6 +434,7 @@ public final class Bridge implements SensorEventListener {
             pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)
+                .put("learning_lux",lastLearningLux).put("framework_event_lux",lastFrameworkLux)
                 .put("poll_ms",pollMs).put("front_registered",frontReading.isRegistered()).put("front_sample_age_ms",frontReading.age(now))
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
                 .put("front_lux",frontLux).put("back_lux",backReading.raw()).put("back_lux_effective",backLux)

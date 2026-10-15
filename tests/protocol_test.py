@@ -90,3 +90,23 @@ with tempfile.TemporaryDirectory() as state:
     assert 'alpha_fast=0.55' in ask(p, 'CONFIG_GET')['data']  # Existing v7 config wins.
     p.stdin.close();assert p.wait(timeout=5) == 0
 print('Legacy tuning migration and local-time frame validation passed')
+
+# The bridge maps an OEM event (e.g. 16.752 fused lux) into the direct front
+# coordinate (9.3 lux). The saved value must survive hold expiry and restart.
+with tempfile.TemporaryDirectory() as state:
+    p = start()
+    ask(p, 'USER 0')
+    ask(p, 'FRAME2 1000 1 1 9.3 180 0 33 70 0 0.049192 0.001 0.4 0 12')
+    ask(p, 'FRAME2 4000 1 1 9.3 180 0 33 70 0 0.049192 0.001 0.4 0 12')
+    s = ask(p, 'EVENT 300000 9.3 0.049192')
+    assert s['storage'] == 'saved' and s['points'][0]['lux'] == 9.3, s
+    s = ask(p, 'FRAME2 40000 1 1 9.3 180 0 33 70 0 0.049192 0.001 0.4 0 12')
+    assert s['apply'] and abs(s['target'] - 0.049192) < 1e-8, s
+    p.kill();p.wait(timeout=5)
+    p = start()
+    assert ask(p, 'USER 0')['storage'] == 'loaded'
+    ask(p, 'FRAME2 50000 1 1 9.3 180 0 33 70 0 0.049192 0.001 0.4 0 23')
+    s = ask(p, 'FRAME2 53000 1 1 9.3 180 0 33 70 0 0.049192 0.001 0.4 0 23')
+    assert s['apply'] and abs(s['target'] - 0.049192) < 1e-8, s
+    p.stdin.close();assert p.wait(timeout=5) == 0
+print('Direct-coordinate preference survives hold expiry and process restart')

@@ -32,7 +32,7 @@ files.update({name: p.read_bytes() for name, p in artifacts.items()})
 files['LICENSE'] = (root / 'LICENSE').read_bytes()
 files['SOURCE.txt'] = (f'GPL-3.0-only\nSource: https://github.com/reF1nd/iOS-Auto-Brightness/tree/{sha}\n'
                        f'Commit: {sha}\nCommit timestamp: {revision}\n').encode()
-archive = out / f'iOS-Auto-Brightness-v7.0.0-beta.4-{sha[:8]}.zip'
+archive = out / f'iOS-Auto-Brightness-v7.0.0-beta.5-{sha[:8]}.zip'
 with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     for name, data in sorted(files.items()):
         info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
