@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-only
 set -euo pipefail
 : "${ANDROID_HOME:?}" "${EMULATOR_API:?}"
+export ANDROID_AVD_HOME="$PWD/build/avd"
+mkdir -p "$ANDROID_AVD_HOME"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 image="system-images;android-$EMULATOR_API;google_apis;x86_64"
 (set +o pipefail; yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" emulator "$image")
 echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --name iab --package "$image" --device pixel_2 --force
+test -s "$ANDROID_AVD_HOME/iab.ini"
 emulator -avd iab -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > build/emulator.log 2>&1 &
 cleanup() {
   timeout 10 adb shell cat /data/local/tmp/iab-state/bridge.log > build/smoke-bridge.log 2>/dev/null || true
