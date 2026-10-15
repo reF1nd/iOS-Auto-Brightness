@@ -2,6 +2,7 @@
 package org.ref1nd.brightness;
 
 import android.content.Context;
+import android.content.AttributionSource;
 import android.database.ContentObserver;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -12,6 +13,9 @@ import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.Build;
+import android.os.Binder;
+import android.os.Bundle;
+import android.os.IBinder;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -206,7 +210,21 @@ public final class Bridge implements SensorEventListener {
         return ((UserManager)context.getSystemService(Context.USER_SERVICE)).getSerialNumberForUser(handle);
     }
     int mode(int uid) throws Exception {
-        return (Integer)Settings.System.class.getMethod("getIntForUser",android.content.ContentResolver.class,String.class,int.class,int.class).invoke(null,context.getContentResolver(),Settings.System.SCREEN_BRIGHTNESS_MODE,-1,uid);
+        // app_process is not an AMS-registered application. Use the external
+        // provider API for privileged clients; never parse settings XML/ABX.
+        Object am=Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null);
+        IBinder token=new Binder();
+        Object holder=call(am,"getContentProviderExternal",new Class<?>[]{String.class,int.class,IBinder.class,String.class},"settings",0,token,"ios-auto-brightness");
+        if(holder==null)throw new IOException("settings provider unavailable");
+        try {
+            Object provider=holder.getClass().getField("provider").get(holder);
+            Bundle extras=new Bundle();extras.putInt("_user",uid);
+            AttributionSource source=new AttributionSource.Builder(android.os.Process.myUid()).build();
+            Bundle values=(Bundle)call(provider,"call",new Class<?>[]{AttributionSource.class,String.class,String.class,String.class,Bundle.class},source,"settings","GET_system",Settings.System.SCREEN_BRIGHTNESS_MODE,extras);
+            if(values==null)return -1;
+            String value=values.getString("value");
+            return value==null?-1:Integer.parseInt(value);
+        }finally{call(am,"removeContentProviderExternalAsUser",new Class<?>[]{String.class,IBinder.class,int.class},"settings",token,0);}
     }
     void thermal(long now) {
         if(now-lastThermal<2000)return;lastThermal=now;
