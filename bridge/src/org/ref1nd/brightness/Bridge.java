@@ -668,6 +668,8 @@ public final class Bridge implements SensorEventListener {
             else {outputSafe=false;outputVerifiedAt=-10000;outputEpoch++;}
             boolean directReady=!observe&&direct!=null&&automatic&&on&&direct.ready(now,current);
             if(direct!=null)outputStatus=direct.status;
+            if(automatic&&on&&direct!=null&&(outputStatus.equals("driver_output_mismatch")||outputStatus.equals("backlight_readback_unavailable")))
+                protectionReason=outputStatus;
             // Direct writes bypass framework application of limits; require a cap reason
             // plus a recent unmodified automatic output and verified driver mapping.
             if(brightnessMaxReason<0)outputStatus="direct_cap_reason_unavailable";
