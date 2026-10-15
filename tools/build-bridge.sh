@@ -22,3 +22,5 @@ javac -cp build/bridge/classes -d build/bridge/test-classes tests/ManualLearning
 java -cp build/bridge/classes:build/bridge/test-classes ManualLearningTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/ParityCompletionTest.java
 java -cp build/bridge/classes:build/bridge/test-classes ParityCompletionTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/InteractionGuardTest.java
+java -cp build/bridge/classes:build/bridge/test-classes InteractionGuardTest

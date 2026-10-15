@@ -43,6 +43,8 @@ s=json.load(open('build/smoke-status.json'))
 assert s.get('ok') and s.get('bridge')=='active' and s.get('observation_only'),s
 assert s.get('mode')=='auto',s
 assert s.get('calibration') and s.get('window_override_detection'),s
+assert s.get('brightness_listener')=='brightness_events',s
+assert 'interaction_guard' in s,s
 print({k:s.get(k) for k in ['bridge','profile','calibration','learning_available','window_override_detection','mode','reason']})
 PY
 sleep 6

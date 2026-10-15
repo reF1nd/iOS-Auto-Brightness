@@ -2,6 +2,9 @@
 package org.ref1nd.brightness;
 /** Pure policy for framework-reported user events; does not infer intent from settings. */
 public final class EventGate {
+    public static boolean controlIntent(long time,long since,long now,int user,int activeUser,String display,String mainDisplay) {
+        return time>since&&time<=now+1000&&now-time<=3000&&user==activeUser&&mainDisplay.equals(display);
+    }
     public static boolean accept(long time, long since, long now, int user, int activeUser,
             String display, String mainDisplay, float[] lux, long[] samples,
             float nits, float powerFactor, boolean reducedColors, boolean eligible) {
