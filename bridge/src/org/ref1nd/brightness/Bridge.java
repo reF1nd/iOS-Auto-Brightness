@@ -27,6 +27,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.*;
 
 /** Privileged adapter. The native core owns algorithms and durable state. */
 public final class Bridge implements SensorEventListener {
@@ -98,7 +99,6 @@ public final class Bridge implements SensorEventListener {
     }
     Bridge(Context c,File mod,File dir,boolean observation) throws Exception {
         context=c;module=mod;state=dir;observe=observation;
-        if(!"altdb".equals(Build.DEVICE))throw new IOException("No calibrated main-display profile for "+Build.DEVICE);
         if(!dir.isDirectory())throw new IOException("state directory not prepared");
         display=(DisplayManager)c.getSystemService(Context.DISPLAY_SERVICE);
         global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
@@ -113,6 +113,7 @@ public final class Bridge implements SensorEventListener {
         if(!scan.next().equals("IAB_PROFILE_V1"))throw new IOException("profile version");scan.next();int n=scan.nextInt();
         if(n<2||n>256)throw new IOException("profile length");
         profileNits=new float[n];profileBacklight=new float[n];for(int i=0;i<n;i++){profileNits[i]=scan.nextFloat();profileBacklight[i]=scan.nextFloat();}scan.close();
+        validatePanel();
         sensors=(SensorManager)c.getSystemService(Context.SENSOR_SERVICE);
         front=sensors.getDefaultSensor(Sensor.TYPE_LIGHT);proximity=sensors.getDefaultSensor(Sensor.TYPE_PROXIMITY);
         for(Sensor s:sensors.getSensorList(Sensor.TYPE_ALL))if(s.getStringType().contains("back_lux")&&!s.isWakeUpSensor()){back=s;break;}
@@ -124,6 +125,31 @@ public final class Bridge implements SensorEventListener {
             launched=new ProcessBuilder(new File(module,"bin/ios_brightness_daemon").getPath(),state.getPath(),new File(module,"profiles/altdb.profile").getPath()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             core=launched;coreIn=new BufferedWriter(new OutputStreamWriter(core.getOutputStream(),StandardCharsets.UTF_8));coreOut=new BufferedReader(new InputStreamReader(core.getInputStream(),StandardCharsets.UTF_8));
         }catch(Exception e){server.close();if(launched!=null)launched.destroy();throw e;}
+    }
+    void validatePanel() throws Exception {
+        Display.Mode mode=display.getDisplay(0).getMode();
+        if(mode.getPhysicalWidth()!=1200||mode.getPhysicalHeight()!=2608)throw new IOException("Unsupported main-panel geometry");
+        Process dump=new ProcessBuilder("/system/bin/dumpsys","display").redirectErrorStream(true).start();
+        Thread timeout=new Thread(()->{SystemClock.sleep(5000);if(dump.isAlive())dump.destroyForcibly();},"iab-probe-timeout");timeout.setDaemon(true);timeout.start();
+        StringBuilder body=new StringBuilder();
+        try(Reader reader=new InputStreamReader(dump.getInputStream(),StandardCharsets.UTF_8)) {
+            char[] b=new char[4096];int n;
+            while((n=reader.read(b))>0){body.append(b,0,n);if(body.length()>2000000){dump.destroyForcibly();throw new IOException("display dump too large");}}
+        }
+        if(dump.waitFor()!=0)throw new IOException("display calibration probe failed");
+        String text=body.toString();
+        int start=text.indexOf("uniqueId=\""+displayId+"\"");
+        if(start<0)throw new IOException("main display calibration identity missing");
+        int end=text.indexOf("DisplayDeviceInfo{",start);
+        String segment=text.substring(start,end<0?text.length():end);
+        Matcher m=Pattern.compile("mBacklight=\\[([^\\]]+)\\], mNits=\\[([^\\]]+)\\]").matcher(segment);
+        if(!m.find())throw new IOException("main panel calibration unavailable");
+        String[] bs=m.group(1).split(","), ns=m.group(2).split(",");
+        if(bs.length!=profileBacklight.length||ns.length!=profileNits.length)throw new IOException("panel calibration changed");
+        for(int i=0;i<bs.length;i++) {
+            float b=Float.parseFloat(bs[i].trim()),n=Float.parseFloat(ns[i].trim());
+            if(!Float.isFinite(b)||!Float.isFinite(n)||Math.abs(b-profileBacklight[i])>.00001||Math.abs(n-profileNits[i])>.05)throw new IOException("panel calibration mismatch");
+        }
     }
     float toBacklight(float nits) {
         if(nits<=profileNits[0])return profileBacklight[0];
@@ -312,7 +338,11 @@ public final class Bridge implements SensorEventListener {
         core.destroy();
         try{replace(new File(state,"status.json"),new JSONObject().put("ok",true).put("bridge","stopped").toString());}catch(Exception ignored){}
     }
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
+        try { run(args); }
+        catch(Throwable e) {System.err.println("iOS Auto Brightness: "+rootCause(e));System.exit(1);}
+    }
+    static void run(String[] args) throws Exception {
         if(args.length>0&&args[0].equals("ctl")) {
             if(args.length<2)throw new IllegalArgumentException("ctl command required");
             try(LocalSocket socket=new LocalSocket()) {

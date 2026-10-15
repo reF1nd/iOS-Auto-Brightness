@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 [ "$KSU" = true ] || abort 'KernelSU is required for this build.'
 [ "$ARCH" = arm64 ] || abort 'This build requires ARM64.'
-[ "$(getprop ro.product.device)" = altdb ] || abort 'No validated display profile for this device.'
 [ "$(getprop ro.build.version.sdk)" -ge 37 ] || abort 'This build targets the Android 17 HyperOS display adapter.'
 STATE=/data/adb/ios_auto_brightness
 [ ! -L "$STATE" ] || abort 'State directory must not be a symlink.'
