@@ -1,6 +1,6 @@
 id=ios_auto_brightness
 name=iOS Auto Brightness
-version=v7.0.0-beta.20
-versionCode=70020
+version=v7.0.0-beta.21
+versionCode=70021
 author=reF1nd
 description=Open-source adaptive brightness with persistent per-lux preferences. Android 12+ / KernelSU, APatch and Magisk. Capability-based main-display adapter.

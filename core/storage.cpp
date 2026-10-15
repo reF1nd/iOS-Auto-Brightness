@@ -39,7 +39,7 @@ void atomicWrite(const std::string& path,const std::string& data) {
 }
 std::string Store::path() const {return directory+"/learning-"+std::to_string(user)+"-"+profile+".dat";}
 std::string Store::encode(const Learning& l) const {
-    std::ostringstream s;s<<std::setprecision(17)<<"IAB_LEARNING_V1 "<<profile<<' '<<user<<' '<<l.legacy_offset<<' '<<l.points.size()<<'\n';
+    std::ostringstream s;s<<std::setprecision(17)<<(profile.find("-v68curve2")!=std::string::npos?"IAB_CURVE_OBSERVATIONS_V2 ":"IAB_LEARNING_V1 ")<<profile<<' '<<user<<' '<<l.legacy_offset<<' '<<l.points.size()<<'\n';
     for(auto& p:l.points)s<<p.lux<<' '<<p.value<<' '<<p.time<<'\n';
     const auto body=s.str();s<<"CHECKSUM "<<std::hex<<checksum(body)<<'\n';return s.str();
 }
@@ -49,10 +49,10 @@ Learning Store::decode(const std::string& text) const {
     std::istringstream check(text.substr(pos+9));uint64_t hash;std::string extra;
     if(!(check>>std::hex>>hash)||(check>>extra)||hash!=checksum(text.substr(0,pos)))throw std::runtime_error("invalid checksum");
     std::istringstream s(text.substr(0,pos));Learning l;std::string magic,id;int64_t uid;size_t count;
-    if(!(s>>magic>>id>>uid>>l.legacy_offset>>count)||magic!="IAB_LEARNING_V1"||id!=profile||uid!=user||count>32||!std::isfinite(l.legacy_offset)||std::abs(l.legacy_offset)>.3)throw std::runtime_error("invalid learning identity or format");
+    if(!(s>>magic>>id>>uid>>l.legacy_offset>>count)||magic!=(profile.find("-v68curve2")!=std::string::npos?"IAB_CURVE_OBSERVATIONS_V2":"IAB_LEARNING_V1")||id!=profile||uid!=user||count>32||!std::isfinite(l.legacy_offset)||std::abs(l.legacy_offset)>.3)throw std::runtime_error("invalid learning identity or format");
     for(size_t i=0;i<count;i++) {
         Point p{};if(!(s>>p.lux>>p.value>>p.time)||!std::isfinite(p.lux)||!std::isfinite(p.value)||p.lux<0||p.lux>200000||p.value<0||p.value>1||p.time<=0)throw std::runtime_error("invalid learning point");
-        if(i&&(p.lux<=l.points.back().lux||p.value<l.points.back().value))throw std::runtime_error("nonmonotonic learning data");
+        if(i&&(p.lux<=l.points.back().lux||(magic=="IAB_LEARNING_V1"&&p.value<l.points.back().value)))throw std::runtime_error("nonmonotonic learning data");
         l.points.push_back(p);
     }
     if(s>>extra)throw std::runtime_error("trailing learning data");

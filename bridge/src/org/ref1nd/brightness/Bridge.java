@@ -73,6 +73,8 @@ public final class Bridge implements SensorEventListener {
     int thermalStatus=-1, brightnessMaxReason=-1;
     DirectBacklight direct;
     boolean frameBlocked=true;
+    final boolean referenceControl=true;
+    boolean referenceLearningAvailable=false;
     String outputStatus="backlight_unavailable";
     boolean outputProbeBusy=false, outputSafe=false;
     long outputProbeAt=-10000, outputVerifiedAt=-10000, outputEpoch=0;
@@ -138,7 +140,7 @@ public final class Bridge implements SensorEventListener {
         boolean safe=pm.getCurrentThermalStatus()==0&&hasField(info,"brightnessMaxReason")&&integer(info,"brightnessMaxReason")==0;
         DirectBacklight.restore(BACKLIGHT_ROOT,new File(state,"direct-output.properties"),
             (String)call(main,"getUniqueId",new Class<?>[]{}),read(new File("/proc/sys/kernel/random/boot_id"),128).trim(),
-            main.getState()==Display.STATE_ON&&pm.isInteractive(),safe,
+            main.getState()==Display.STATE_ON&&pm.isInteractive(),safe&&Settings.System.getInt(context.getContentResolver(),Settings.System.SCREEN_BRIGHTNESS_MODE,1)==0,
             number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness"),number(info,"brightnessMaximum"),()->standalonePanelRead(module));
     }
     static long standalonePanelRead(File module) throws IOException {
@@ -216,7 +218,7 @@ public final class Bridge implements SensorEventListener {
                 else throw new IOException("explicit main-panel backlight.conf binding required");
             }
             direct=new DirectBacklight(BACKLIGHT_ROOT,node,new File(state,"direct-output.properties"),displayId,bootId,verifiedPanel?this::panelRead:null,BacklightLease.POSIX,verifiedPanel);
-            outputStatus="verifying_mapping";
+            direct.referenceMode();outputStatus="verifying_mapping";
         }catch(Exception e){outputStatus="backlight_unavailable: "+rootCause(e);}
         loadSensorChoice();
         // Missing or failed primary sensors can use the independently registered rear/fallback source.
@@ -227,6 +229,7 @@ public final class Bridge implements SensorEventListener {
             if(!observe)release(context,state,module);
             launched=new ProcessBuilder(new File(module,"bin/ios_brightness_daemon").getPath(),state.getPath(),new File(state,"active.profile").getPath()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             core=launched;coreIn=new BufferedWriter(new OutputStreamWriter(core.getOutputStream(),StandardCharsets.UTF_8));coreOut=new BufferedReader(new InputStreamReader(core.getInputStream(),StandardCharsets.UTF_8));
+            request("POLICY v68");
         }catch(Exception e){server.close();if(launched!=null)launched.destroy();throw e;}
     }
     static Sensor exactSensor(SensorManager manager,String name) throws IOException {
@@ -276,7 +279,7 @@ public final class Bridge implements SensorEventListener {
         if(outputProbeBusy||now-outputProbeAt<1000)return;
         outputProbeBusy=true;outputProbeAt=now;final long epoch=outputEpoch, sampledAt=now;
         new Thread(()->{
-            boolean safe=false;try{safe=ProtectionPolicy.clearedTemporary(displayDump());}catch(Exception ignored){}
+            boolean safe=false;try{safe=ProtectionPolicy.referenceOutput(displayDump());}catch(Exception ignored){}
             final boolean found=safe;
             handler.post(()->{outputProbeBusy=false;if(closing.get()||epoch!=outputEpoch)return;outputSafe=found;outputVerifiedAt=sampledAt;wake();});
         },"iab-direct-protection").start();
@@ -350,6 +353,7 @@ public final class Bridge implements SensorEventListener {
             @Override public void onChange(boolean selfChange) { onChange(selfChange,null); }
             @Override public void onChange(boolean selfChange,android.net.Uri uri) {
                 if(closing.get())return;
+                if(referenceControl){wake();return;}
                 changedAt=SystemClock.elapsedRealtime();interaction.signal();wake();
                 try{request("HOLD "+changedAt);clearOverride();}catch(Exception e){bridgeError=e.toString();}
             }
@@ -394,6 +398,7 @@ public final class Bridge implements SensorEventListener {
         return number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness");
     }
     boolean externalBrightness(Object info,long now) throws Exception {
+        if(referenceControl)return false;
         if(observe||info==null)return false;
         // Framework changes are external: direct writes never echo through this API.
         // Protection is handled separately and must never be mistaken for learning.
@@ -434,6 +439,7 @@ public final class Bridge implements SensorEventListener {
     }
     void displayChanged() {
         if(closing.get())return;
+        if(referenceControl){wake();return;}
         try {
             Display main=display.getDisplay(0);
             if(main!=null&&main.getState()==Display.STATE_ON&&power.isInteractive()) {
@@ -714,7 +720,18 @@ public final class Bridge implements SensorEventListener {
             result=request(String.format(Locale.ROOT,"FRAME3 %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d %d %.8f",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,(direct!=null&&!observe?direct.frameBrightness(current):current),minimum,maximum,blocked?1:0,Calendar.getInstance().get(Calendar.HOUR_OF_DAY),luxSource.equals("dual_max_v1")?primary:-1));
             if(result.optString("reason").startsWith("proximity")||result.optBoolean("ambient_guard")||!result.optBoolean("enabled")){eligible=false;learningLux.reset();}
             if(!automatic||!on||!result.optBoolean("enabled")){pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();}
-            else {
+            else if(referenceControl) {
+                // Reference policy reads the 0..255 setting and uses its fixed
+                // gamma/table conversion. It never treats framework nits as output.
+                String slider=systemSetting(user,Settings.System.SCREEN_BRIGHTNESS);
+                try {
+                    int value=Integer.parseInt(slider);
+                    referenceLearningAvailable=value>=0&&value<=255;
+                    if(!referenceLearningAvailable)eventStatus="reference_slider_range_unsupported";
+                    else {result=request("SLIDER "+value+" "+System.currentTimeMillis());eventStatus=result.optString("storage");}
+                }catch(NumberFormatException e){referenceLearningAvailable=false;eventStatus="reference_slider_unavailable";}
+                pending=null;manual.cancel();settingsLearning.reset();interaction.reset();
+            } else {
                 // A real event supersedes heuristic capture; an explicitly armed
                 // window retains its existing behavior on every ROM.
                 if(!(manual.until>0&&manual.origin.equals("manual"))&&now-lastFrame>=250){events(now,eligible&&result.optBoolean("learning_enabled"));lastFrame=now;result=request("STATUS");}
@@ -739,6 +756,8 @@ public final class Bridge implements SensorEventListener {
                     interaction.wrote(writeNow,adjusted(latest),adjusted(latest));
                     lastWrite=target;overridden=true;outputStatus=direct.status;
                 }else clearOverride();
+            }else if(referenceControl&&automatic&&!on&&result.optBoolean("enabled")&&protectionReason.isEmpty()&&direct!=null&&direct.locked()) {
+                direct.suspend();outputStatus=direct.status;
             }else clearOverride();
             bridgeError="";
             boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&manual.until==0&&now-changedAt>5000&&(luxSource.equals("front")||luxSource.equals("dual_max_v1"))&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
@@ -761,12 +780,12 @@ public final class Bridge implements SensorEventListener {
                 .put("backlight_actual",direct==null?-1:direct.actual()).put("backlight_maximum",direct==null?-1:direct.maximum)
                 .put("protection_signals",hasField(info,"brightnessMaxReason")?"thermal_and_cap_reason":"thermal_and_system_cap_only")
                 .put("thermal_status",thermalStatus).put("brightness_max_reason",brightnessMaxReason).put("protection",protectionReason.isEmpty()?"clear":protectionReason)
-                .put("manual_learning_available",true).put("manual_learning_armed",manual.until>now).put("learning_scope",learningScope).put("sensor_selection",sensorSelectionStatus)
+                .put("manual_learning_available",!referenceControl).put("manual_learning_armed",manual.until>now).put("learning_scope",learningScope).put("sensor_selection",sensorSelectionStatus)
                 .put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("brightness_listener",brightnessListener).put("interaction_guard",interaction.status)
                 .put("proximity_near",near).put("input_lux",lux).put("fusion_policy",luxSource.equals("dual_max_v1")?"brighter_valid_side":"single_source")
                 .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)
-                .put("calibration",calibrationStatus).put("learning_available",eventCapability.available()).put("event_capability",eventCapability.status).put("learning_value_source",calibrated?"calibrated_event":"stable_framework_output").put("window_override_detection",hasField(info,"isBrightnessOverrideByWindow")?"framework":("power_dump:"+windowState))
+                .put("calibration",calibrationStatus).put("learning_available",referenceLearningAvailable).put("event_capability",eventCapability.status).put("learning_value_source","reference_slider_gamma").put("control_policy","v68").put("learning_model","bounded_curve_offset").put("window_override_detection",hasField(info,"isBrightnessOverrideByWindow")?"framework":("power_dump:"+windowState))
                 .put("learning_lux",lastLearningLux).put("framework_event_lux",lastFrameworkLux)
                 .put("poll_ms",pollMs).put("front_registered",frontReading.isRegistered()).put("front_sample_age_ms",frontReading.age(now))
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
@@ -799,6 +818,7 @@ public final class Bridge implements SensorEventListener {
             return new JSONObject().put("ok",true);
         }
         if(cmd.equals("learn-arm")) {
+            if(referenceControl)throw new IOException("参考模式直接根据滑块变化采集曲线偏好，无需开启学习窗口");
             tick();
             if(!eligible||!protectionReason.isEmpty()||result.optBoolean("ambient_guard")||!result.optBoolean("settled"))throw new IOException("screen, automatic mode and stable unprotected lux required");
             manualSlider=systemSetting(user,Settings.System.SCREEN_BRIGHTNESS);manualAdjustment=systemSetting(user,"screen_auto_brightness_adj");

@@ -40,4 +40,20 @@ public final class ProtectionPolicy {
             && Pattern.compile("(?m)^\\s*mTemporaryScreenBrightness[=:]\\s*NaN\\s*$").matcher(main).find()
             && Pattern.compile("(?m)^\\s*mCachedBrightnessInfo.brightnessMaxReason\\s*=0\\s*$").matcher(main).find();
     }
+    /** v6.8 owns automatic brightness through timeout DIM and slider requests. */
+    public static boolean referenceOutput(String dump) {
+        String[] sections=dump.split("(?m)^Display Power Controller:\\s*$");
+        String main=null;
+        for(int i=1;i<sections.length;i++)if(Pattern.compile("(?m)^\\s*mDisplayId=0\\s*$").matcher(sections[i]).find()) {
+            if(main!=null)return false;main=sections[i];
+        }
+        if(main==null)return false;
+        Matcher reason=Pattern.compile("(?m)^\\s*mBrightnessReason=(automatic|temporary)(?:[ \\t]+\\[([^\\]]*)\\])?[ \\t]*$").matcher(main);
+        if(!reason.find())return false;
+        String modifiers=reason.group(2);
+        if(modifiers!=null)for(String modifier:modifiers.trim().split("\\s+"))
+            if(!modifier.isEmpty()&&!modifier.equals("dim")&&!modifier.equals("bcbc"))return false;
+        return Pattern.compile("(?m)^\\s*mCachedBrightnessInfo.brightnessMaxReason\\s*=0\\s*$").matcher(main).find();
+    }
+
 }

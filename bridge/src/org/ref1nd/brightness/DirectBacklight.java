@@ -14,6 +14,7 @@ public final class DirectBacklight {
     private final File node, journal;
     private final BacklightLease lease;
     private RandomAccessFile writer;
+    private boolean reference=false;
     private float baselineFramework=Float.NaN;
     private final String display, boot;
     public final long maximum;
@@ -39,6 +40,9 @@ public final class DirectBacklight {
         maximum=Backlight.number(new File(node,"max_brightness"));
         if(maximum<2||maximum>1000000||!new File(node,"brightness").canWrite())throw new IOException("backlight range or write access unavailable");
     }
+    public void referenceMode(){reference=true;}
+    /** Keep the lease through sleep, but never write an off/AOD panel. */
+    public void suspend(){status="reference_screen_off";stableAt=-1;}
     public String path(){return node.getPath();}
     public boolean owned(){return last>=0;}
     public boolean locked(){return lease!=null&&lease.active();}
@@ -67,7 +71,7 @@ public final class DirectBacklight {
         if(liveMaximum!=maximum||raw<0||raw>maximum||actual<0||actual>maximum) {
             abandon(now,"backlight_readback_unavailable");return false;
         }
-        if(owned()&&raw!=last){abandon(now,"external_backlight_write");return false;}
+        if(owned()&&raw!=last&&!reference){abandon(now,"external_backlight_write");return false;}
         // A lower driver output can be an unreported vendor protection. Do not retry it.
         if(!close(actual,raw)){abandon(now,"driver_output_mismatch");return false;}
         if(owned()){status="direct_active";return true;}
@@ -95,13 +99,13 @@ public final class DirectBacklight {
         synchronized(DirectBacklight.class) {
         long raw=units(Math.min(target,cap),maximum);
         // Acquire without a brightness step; following frames use the normal ramp.
-        if(verifiedScale&&!owned()&&baseline>=0)raw=Math.min(baseline,units(cap,maximum));
+        if(verifiedScale&&!reference&&!owned()&&baseline>=0)raw=Math.min(baseline,units(cap,maximum));
         if(raw<1)throw new IOException("refusing to blank an active display");
         if(Backlight.number(new File(node,"max_brightness"))!=maximum)throw new IOException("backlight range changed");
         // Recheck after IPC. If the system wrote in the meantime, leave its value alone.
         long before=requested();
-        if((owned()?before!=last:before!=baseline)||!close(actual(),before))throw new IOException("backlight ownership changed before write");
-        if(owned()&&raw==last)return;
+        if((owned()?(!reference&&before!=last):before!=baseline)||!close(actual(),before))throw new IOException("backlight ownership changed before write");
+        if(owned()&&raw==last&&before==raw)return;
         try {
         if(lease!=null) {
             // app_process can lack DAC override despite uid 0. Retain a handle

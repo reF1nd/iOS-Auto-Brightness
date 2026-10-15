@@ -9,12 +9,13 @@ const fields = [
   ['night_enabled','夜间默认亮度降低 5%',0,1,1], ['low_battery_enabled','低于 15% 电量额外限亮',0,1,1],
   ['enabled','启用调光',0,1,1], ['learning_enabled','记住手动调节',0,1,1],
   ['settings_learning','持续兼容学习（根据设置变化；可能误学）',0,1,1],
+  ['manual_gamma','滑块换算 Gamma',1.2,3.5,.1],
   ['alpha_fast','快速响应',.01,.9,.01],['alpha_mid','中速响应',.01,.9,.01],['alpha_slow','慢速稳定',.001,.9,.001],
   ['fast_threshold','快速变化阈值',.1,5,.05],['slow_threshold','稳定阈值',.001,.5,.001],
   ['spike_up','上升尖峰阈值',2,50,.5],['spike_down','下降尖峰阈值',.001,.5,.001],
   ['hyst_low','低亮度回差',0,.2,.005],['hyst_high','高亮度回差',0,.2,.005],
   ['high_lux_threshold','阳光模式照度阈值',5000,100000,500],['high_lux_boost_max','阳光最高增益',0,1,.01],
-  ['high_lux_min_pct','充分强光下限（两倍阈值）',0,1,.01],['high_lux_duration_ms','强光退出延迟（毫秒）',1000,20000,500],
+  ['high_lux_min_pct','阳光模式亮度下限',0,1,.01],['high_lux_duration_ms','强光退出延迟（毫秒）',1000,20000,500],
   ['user_hold_ms','手动调整后等待（毫秒）',2000,30000,500],
   ['log_max_bytes','日志上限（字节）',65536,8388608,65536],['log_max_backups','日志备份份数',1,8,1],
 ];
@@ -98,6 +99,12 @@ function preview() {
       return Math.max(0,Math.min(1,(a[1]+t*(b[1]-a[1])+offset)*scale));
     };
     const learned=(lux)=>{
+      if(runtime.learning_model==='bounded_curve_offset') {
+        const rows=runtime.curve;let i=rows.findIndex(p=>p[0]>=lux);if(i<0)i=rows.length-1;
+        let value=rows[i][2];
+        if(i>0){const a=rows[i-1],b=rows[i],t=(Math.log1p(lux)-Math.log1p(a[0]))/(Math.log1p(b[0])-Math.log1p(a[0]));value=a[2]+t*(b[2]-a[2]);}
+        return Math.max(0,Math.min(1,value/(runtime.night_scale||1)*scale));
+      }
       if(!points.length)return base(lux);
       const first=points[0],last=points.at(-1),left=Math.max(0,(first.lux+1)/10-1),right=Math.min(200000,(last.lux+1)*10-1);
       const knots=points.map(p=>[p.lux,p.brightness]);
@@ -108,7 +115,7 @@ function preview() {
       const a=knots[i-1],b=knots[i];return a[1]+(b[1]-a[1])*(Math.log1p(lux)-Math.log1p(a[0]))/(Math.log1p(b[0])-Math.log1p(a[0]));
     };
     const threshold=Number(c.high_lux_threshold??15000), gain=Number(c.high_lux_boost_max??.35),floor=Number(c.high_lux_min_pct??.9),cap=runtime.maximum??1;
-    chart(runtime.curve.map(p=>{const normal=learned(p[0]),progress=Math.max(0,Math.min(1,(p[0]-threshold)/threshold));return [p[0],p[1]*scale,normal,Math.min(cap,Math.max(normal*(1+progress*gain),normal+progress*Math.max(0,cap*floor-normal)))];}),runtime);
+    chart(runtime.curve.map(p=>{const normal=learned(p[0]),progress=Math.max(0,Math.min(1,(p[0]-threshold)/threshold));return [p[0],p[1]*scale,normal,Math.min(cap,Math.max(normal*(1+progress*gain),runtime.control_policy==='v68'&&p[0]>=threshold?cap*floor:normal+progress*Math.max(0,cap*floor-normal)))];}),runtime);
     $('previewState').textContent=dirty?'未保存配置预览（稳态示意，不包含过渡、保护与限温）':'已保存配置曲线（稳态示意）';
   }catch(e){note(e.message);}finally{runtime=live;if(!live)$('previewState').textContent='离线示例预览：未经当前屏幕校准，不代表实际输出';}
 }
@@ -125,11 +132,14 @@ async function refresh(load=false) {
     $('learningState').textContent=`存储：${s.storage??'未知'} · 调节事件：${s.event_status??'等待'} · 用户序号：${s.user??'—'}`;
     $('points').replaceChildren();const table=document.createElement('table');
     for(const p of s.points??[]){const tr=document.createElement('tr');for(const value of [`${p.lux.toFixed(1)} lux`,`${(p.brightness*100).toFixed(2)}%`,new Date(p.time).toLocaleString()]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}$('points').append(table);
-    $('diagnostics').textContent=JSON.stringify({output_backend:s.output_backend,output_status:s.output_status,backlight_write_locked:s.backlight_write_locked,driver_learning_status:s.driver_learning_status,backlight_node:s.backlight_node,backlight_requested:s.backlight_requested,backlight_actual:s.backlight_actual,backlight_maximum:s.backlight_maximum,profile:s.profile,calibration:s.calibration,brightness_listener:s.brightness_listener,interaction_guard:s.interaction_guard,learning_available:s.learning_available,event_capability:s.event_capability,learning_value_source:s.learning_value_source,settings_learning:s.settings_learning,window_override_detection:s.window_override_detection,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,cpu_core_percent:s.cpu_core_percent,cpu_total_percent:(s.cpu_percent??0)+(s.cpu_core_percent??0),protection:s.protection,protection_signals:s.protection_signals,thermal_status:s.thermal_status,brightness_max_reason:s.brightness_max_reason,learning_scope:s.learning_scope,manual_learning_armed:s.manual_learning_armed,sensor_selection:s.sensor_selection,input_lux:s.input_lux,fusion_policy:s.fusion_policy,proximity_near:s.proximity_near,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
+    $('diagnostics').textContent=JSON.stringify({output_backend:s.output_backend,output_status:s.output_status,backlight_write_locked:s.backlight_write_locked,driver_learning_status:s.driver_learning_status,backlight_node:s.backlight_node,backlight_requested:s.backlight_requested,backlight_actual:s.backlight_actual,backlight_maximum:s.backlight_maximum,profile:s.profile,calibration:s.calibration,brightness_listener:s.brightness_listener,interaction_guard:s.interaction_guard,learning_available:s.learning_available,event_capability:s.event_capability,learning_value_source:s.learning_value_source,settings_learning:s.settings_learning,window_override_detection:s.window_override_detection,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,cpu_core_percent:s.cpu_core_percent,cpu_total_percent:(s.cpu_percent??0)+(s.cpu_core_percent??0),protection:s.protection,protection_signals:s.protection_signals,thermal_status:s.thermal_status,brightness_max_reason:s.brightness_max_reason,learning_scope:s.learning_scope,manual_learning_armed:s.manual_learning_armed,sensor_selection:s.sensor_selection,input_lux:s.input_lux,fusion_policy:s.fusion_policy,proximity_near:s.proximity_near,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,slider_gamma:legacyGamma,control_policy:s.control_policy,learning_model:s.learning_model},null,2);
+    $('learnArm').hidden=s.control_policy==='v68';
+    $('settings_learning').disabled=s.control_policy==='v68';
+    $('user_hold_ms').disabled=s.control_policy==='v68';
     preview();
     $('curvePoint').textContent=`红点：框架报告亮度 · 照度 ${s.lux>=0?s.lux.toFixed(2):'—'} lux · 系统设置 ${s.setting>=0?(s.setting*100).toFixed(2):'—'}%`;
     if(load&&!dirty)setConfig(await readConfig());
-    if(!busy)note(s.protection&&s.protection!=='clear'?'系统保护优先：已释放亮度控制并暂停学习。':s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':s.settings_learning?'持续兼容学习已开启：真实事件优先，也会根据设置变化推断调节，可能误学。':s.learning_available?'已连接。手动调节后，请确认学习状态以 saved 开头。':'自动事件学习不可用，可点击“学习下一次手动调节”后再拖亮度条。');
+    if(!busy)note(s.protection&&s.protection!=='clear'?'系统保护优先：已释放亮度控制并暂停学习。':s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':s.control_policy==='v68'?'参考调光流程：多个偏好样本共同修正预设曲线，偏移有界并持久保存。':s.settings_learning?'持续兼容学习已开启：真实事件优先，也会根据设置变化推断调节，可能误学。':s.learning_available?'已连接。手动调节后，请确认学习状态以 saved 开头。':'自动事件学习不可用，可点击“学习下一次手动调节”后再拖亮度条。');
   }catch(e){$('status').replaceChildren();$('learningState').textContent='服务离线：旧状态已清除';$('points').replaceChildren();runtime=null;preview();note(e.message);
     try{if(load&&!dirty)setConfig(await readConfig());$('diagnostics').textContent=await exec(`sh ${quote(`${root}/check_status.sh`)}`);}catch(d){$('diagnostics').textContent=d.message;}
   }finally{

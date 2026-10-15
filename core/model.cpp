@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "model.hpp"
+#include "reference.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -96,7 +97,7 @@ double baseNits(double lux) {
     if(lux<=10000) return 300+std::log(lux/1000)/std::log(10)*200;
     return 500+std::log(std::min(lux,100000.0)/10000)/std::log(10)*38.5;
 }
-void Learning::add(double lux,double value,int64_t time) {
+void Learning::add(double lux,double value,int64_t time,bool constrain) {
     range(lux,0,200000,"learn lux");range(value,0,1,"learn brightness");
     if(time<=0) throw std::runtime_error("invalid sample timestamp");
     auto it=std::min_element(points.begin(),points.end(),[&](const Point&a,const Point&b){return std::abs(std::log1p(a.lux)-std::log1p(lux))<std::abs(std::log1p(b.lux)-std::log1p(lux));});
@@ -105,7 +106,7 @@ void Learning::add(double lux,double value,int64_t time) {
     if(points.size()>32) points.erase(std::min_element(points.begin(),points.end(),[](auto&a,auto&b){return a.time<b.time;}));
     std::sort(points.begin(),points.end(),[](auto&a,auto&b){return a.lux<b.lux;});
     // The latest explicit adjustment takes precedence; constrain conflicting neighbours.
-    for(auto& p:points) {if(p.lux<lux)p.value=std::min(p.value,value); if(p.lux>lux)p.value=std::max(p.value,value);}
+    if(constrain)for(auto& p:points) {if(p.lux<lux)p.value=std::min(p.value,value); if(p.lux>lux)p.value=std::max(p.value,value);}
 }
 double Learning::target(double lux,const Profile& p,double baseScale) const {
     const auto base=[&](double l){return std::clamp((p.toBrightness(baseNits(l))+legacy_offset)*baseScale,0.0,1.0);};
@@ -121,12 +122,62 @@ double Learning::target(double lux,const Profile& p,double baseScale) const {
     if(xs.size()==1) return ys.front();
     return interpolate(std::log1p(lux),xs,ys);
 }
+double Learning::referenceTarget(double lux) const {
+    const auto base=[](double l){return referenceBrightness(referenceNits(l));};
+    if(points.empty())return std::clamp(base(lux)+legacy_offset,0.0,1.0);
+    bool cached=fitted_offset==legacy_offset&&fitted_from.size()==points.size();
+    for(size_t i=0;cached&&i<points.size();i++)cached=points[i].lux==fitted_from[i].lux&&points[i].value==fitted_from[i].value;
+    if(cached)return interpolate(std::log1p(lux),fitted_x,fitted_y);
+    // All samples contribute bounded residuals. A unit-weight zero-offset prior
+    // keeps the preset curve authoritative; no sample is an interpolation anchor.
+    std::vector<double> px,delta,xs,ys;
+    for(const auto& p:points){px.push_back(std::log1p(p.lux));delta.push_back(std::clamp(p.value-base(p.lux),-.3,.3));}
+    constexpr int count=129;
+    for(int i=0;i<count;i++) {
+        double x=i*std::log1p(200000.0)/(count-1),sum=0,weight=1;
+        for(size_t j=0;j<px.size();j++) {
+            double distance=(x-px[j])/std::log(10.0),w=1/(1+distance*distance);
+            sum+=w*delta[j];weight+=w;
+        }
+        xs.push_back(x);ys.push_back(std::clamp(base(std::expm1(x))+std::clamp(legacy_offset+sum/weight,-.3,.3),0.0,1.0));
+    }
+    // Isotonic projection prevents contradictory observations from producing a
+    // falling brightness curve. It does not force the curve through observations.
+    std::vector<double> means;std::vector<int> sizes;
+    for(double y:ys) {
+        means.push_back(y);sizes.push_back(1);
+        while(means.size()>1&&means[means.size()-2]>means.back()) {
+            auto n=means.size();int total=sizes[n-2]+sizes[n-1];
+            means[n-2]=(means[n-2]*sizes[n-2]+means[n-1]*sizes[n-1])/total;
+            sizes[n-2]=total;means.pop_back();sizes.pop_back();
+        }
+    }
+    size_t at=0;for(size_t i=0;i<means.size();i++)for(int j=0;j<sizes[i];j++)ys[at++]=means[i];
+    fitted_from=points;fitted_offset=legacy_offset;fitted_x=xs;fitted_y=ys;
+    return interpolate(std::log1p(lux),xs,ys);
+}
 double Controller::nightScale() const {
     return config.night_enabled && frame_.local_hour>=0 && frame_.local_hour<24 &&
         (frame_.local_hour>=18 || frame_.local_hour<6) ? .95 : 1;
 }
+double Controller::base(double lux) const {return reference?referenceBrightness(referenceNits(lux)):profile.toBrightness(baseNits(lux));}
+double Controller::target(double lux) const {
+    return reference?std::clamp(learning.referenceTarget(lux)*nightScale(),0.0,1.0):learning.target(lux,profile,nightScale());
+}
+bool Controller::slider(int value,int64_t wallTime) {
+    if(value<0||value>255||wallTime<=0)throw std::runtime_error("slider outside reference range");
+    const int before=last_slider_;
+    if(before<0){last_slider_=value;return false;}
+    if(!reference||!config.enabled||!config.learning_enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||smooth_<0||output_<0) {
+        last_slider_=value;return false;
+    }
+    if(std::abs(value-before)<10)return false;
+    last_slider_=value;
+    learning.add(smooth_,std::clamp(referenceSlider(value,config.manual_gamma)/nightScale(),0.0,1.0),wallTime,false);
+    return true;
+}
 void Controller::reset() {
-    frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
+    last_slider_=-1;frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;solar_decay_=false;dark_pending_=false;dark_since_=-1;
     near_since_=-1;far_since_=-1;proximity_confirmed_=false;front_baseline_=-1;
     guard_front_=0;guard_back_=0;guard_confirmed_=false;guard_missing_=false;ambient_history_.clear();
@@ -138,11 +189,11 @@ bool Controller::learn(double lux,double value,int64_t time) {
     if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
-    learning.add(lux,value,time);hold(frame_.now);return true;
+    learning.add(lux,value,time,!reference);if(!reference)hold(frame_.now);return true;
 }
 Output Controller::step(const Frame& f) {
     const bool waking=f.automatic&&f.screen&&(!frame_.automatic||!frame_.screen);
-    if(waking){reset();wake_until_=f.now+2000;}
+    if(waking){reset();wake_until_=f.now+(reference?0:2000);}
     frame_=f;
     auto clearStrong=[&](){high_confirm_=0;last_high_confirm_=-1;strong_since_=-1;};
     auto release=[&](const char* reason){output_=-1;ramp_duration_=0;ramp_target_=-1;return Output{false,0,reason};};
@@ -267,7 +318,7 @@ Output Controller::step(const Frame& f) {
     const bool fastWake=f.now<wake_until_&&strongConfirmed;
     if(f.now<wake_until_&&!fastWake) return release("wake_settling");
     // Explicit learned points take precedence over the time-of-day default.
-    double target=learning.target(smooth_,profile,nightScale());
+    double target=this->target(smooth_);
     const bool wasSunlight=sunlight_;
     if(!safe) {sunlight_=false;clearStrong();high_exit_at_=-1;}
     else if(!sunlight_&&strongConfirmed) {sunlight_=true;high_exit_at_=-1;}
@@ -275,7 +326,7 @@ Output Controller::step(const Frame& f) {
         if(smooth_>=config.high_lux_threshold) {
             high_exit_at_=-1;
             const double progress=std::clamp((smooth_-config.high_lux_threshold)/config.high_lux_threshold,0.0,1.0);
-            const double floor=target+progress*std::max(0.0,f.maximum*config.high_lux_min_pct-target);
+            const double floor=reference?f.maximum*config.high_lux_min_pct:target+progress*std::max(0.0,f.maximum*config.high_lux_min_pct-target);
             sunlight_target_=std::max(target*(1+progress*config.high_lux_boost_max),floor);
         } else if(smooth_<config.high_lux_threshold*.7) {
             if(high_exit_at_<0)high_exit_at_=f.now;
@@ -296,6 +347,12 @@ Output Controller::step(const Frame& f) {
         ramp_duration_=0;ramp_target_=-1;
         return {true,output_,"sunlight"};
     }
+    if(reference&&output_<0) {
+        // Reference warm start applies the current curve instead of replaying a
+        // stale framework level. Screen-off frames never reach this write path.
+        output_=target;desired_=target;ramp_duration_=0;ramp_target_=target;
+        return {true,output_,"reference_warm_start"};
+    }
     if(output_<0)output_=std::clamp(f.current,f.minimum,cap);
     const bool fastBright=strongConfirmed&&target>output_;
     const bool solarExit=wasSunlight&&!sunlight_;
@@ -308,18 +365,19 @@ Output Controller::step(const Frame& f) {
         bool reverse=ramp_target_>=0 && (target-output_)*(ramp_target_-output_)<0;
         if(ramp_duration_==0 || reverse || (fast_dark_&&!solar_decay_&&ramp_duration_>200) || (fastBright&&ramp_duration_>400)) {
             // Time spent asleep preceded this target; it must not consume the new ramp.
-            ramp_from_=output_;ramp_at_=f.now-static_cast<int64_t>(std::min(dt,.25)*1000);
+            ramp_from_=output_;ramp_at_=reference?f.now:f.now-static_cast<int64_t>(std::min(dt,.25)*1000);
             double distance=std::abs(target-output_);
             ramp_duration_=solar_decay_&&target<output_?3000:(fastBright?400:(rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))))));
+            if(reference)ramp_duration_=sunlight_?1000:(fast_dark_&&target<output_?200:referenceRamp(distance,target>output_));
         }
         ramp_target_=target;
-        double t=std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
+        double t=ramp_duration_==0?1:std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
         double eased=t<.5?4*t*t*t:1-std::pow(-2*t+2,3)/2;
         double previous=output_;
         output_=std::clamp(ramp_from_+(ramp_target_-ramp_from_)*eased,std::min(previous,target),std::max(previous,target));
         // Moving endpoints must not bypass the downward slew limit. Ignore
         // sleep time before a new target; system/low-battery caps below win.
-        if(output_<previous)output_=std::max(output_,previous*std::pow(.8,std::min(dt,.25)));
+        if(!reference&&output_<previous)output_=std::max(output_,previous*std::pow(.8,std::min(dt,.25)));
         if(t>=1&&std::abs(output_-target)<.00001)ramp_duration_=0;
         desired_=target;
     } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;solar_decay_=false;}

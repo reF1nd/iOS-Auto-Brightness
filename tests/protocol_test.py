@@ -182,3 +182,18 @@ with tempfile.TemporaryDirectory() as state:
     assert not ask(p, 'FRAME3 11500 1 1 9.774 9.774 1 35 80 0 0.03 0.001 0.4 1 12 0')['apply']
     p.stdin.close(); assert p.wait(timeout=5) == 0
 print('Fused coordinate persistence, wake, proximity debounce and protection passed')
+
+# Reference model uses versioned observations and restores the same fitted curve
+# after a real process replacement, while leaving legacy data isolated.
+with tempfile.TemporaryDirectory() as state:
+    def ref_start():
+        return subprocess.Popen([exe,state,profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    p=ref_start();ask(p,'POLICY v68');ask(p,'USER 0')
+    ask(p,'FRAME 1000 1 1 10 10 0 30 80 0 0.8 0.001 1 0')
+    ask(p,'SLIDER 80 10000');s=ask(p,'SLIDER 110 11000')
+    assert s['storage']=='saved_reference_curve' and len(s['points'])==1,s
+    first=s['curve'];p.kill();p.wait(timeout=5)
+    p=ref_start();ask(p,'POLICY v68');s=ask(p,'USER 0')
+    assert s['storage']=='loaded' and s['curve']==first,s
+    assert 'IAB_CURVE_OBSERVATIONS_V2' in ask(p,'EXPORT')['data']
+    p.kill();p.wait(timeout=5)

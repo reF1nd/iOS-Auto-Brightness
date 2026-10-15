@@ -70,6 +70,18 @@ public final class BacklightLeaseTest {
             live.write(.31f,1);set(panel,"actual_brightness",310);
             check(Files.readString(file.toPath()).trim().equals("310"),"subsequent write seeks to start without reopening");
             live.released();check(posix.get(file).equals("rw-r--r--"),"close retained descriptor and restore mode");
+            set(panel,"brightness",200);set(panel,"actual_brightness",200);mode[0]="rw-r--r--";
+            var reference=new DirectBacklight(root.toFile(),"panel0",root.resolve("direct-output.properties").toFile(),"main","boot",()->Long.parseLong(Files.readString(panel.resolve("actual_brightness")).trim()),access,true);
+            reference.referenceMode();reference.ready(10000,.8f);check(reference.ready(11000,.8f),"reference scale need not match stale framework");
+            reference.write(.3f,1);set(panel,"actual_brightness",300);
+            check(reference.requested()==300,"reference warm start applies curve immediately");
+            reference.suspend();check(reference.locked(),"sleep retains lease without writing");
+            set(panel,"brightness",500);set(panel,"actual_brightness",500);
+            check(reference.ready(12000,.8f),"reference ownership does not follow framework transitions");
+            reference.write(.3f,1);set(panel,"actual_brightness",300);
+            check(reference.requested()==300,"reference restores its target after an ordinary external write");
+            set(panel,"actual_brightness",100);
+            check(!reference.ready(12100,.8f)&&!reference.locked(),"driver protection still releases reference lease");
             System.out.println("Backlight permission acquisition, normal/crash recovery, foreign ownership and direct output passed");
         }finally{try(var paths=Files.walk(root)){for(Path p:paths.sorted(java.util.Comparator.reverseOrder()).toList())Files.delete(p);}}
     }

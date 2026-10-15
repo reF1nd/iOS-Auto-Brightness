@@ -28,6 +28,11 @@ public final class ProtectionPolicyTest {
         check(!ProtectionPolicy.clearedTemporary(main.replace("Reason =0","Reason =1")),"cannot recover thermal cap");
         check(!ProtectionPolicy.clearedTemporary(main.replace("mDisplayId=0","mDisplayId=1")),"rear display cannot authorize write");
         check(!ProtectionPolicy.clearedTemporary(main+main),"ambiguous controller rejected");
+        for(String reason:new String[]{"automatic","automatic [ dim ]","automatic [ bcbc dim ]","temporary"})
+            check(ProtectionPolicy.referenceOutput(main.replace("Reason=automatic","Reason="+reason)),"reference owns dim and slider output");
+        for(String reason:new String[]{"doze","override","automatic [ thermal ]","automatic [ unknown ]","automatic [ bcbc low_pwr ]"})
+            check(!ProtectionPolicy.referenceOutput(main.replace("Reason=automatic","Reason="+reason)),"reference retains explicit protection boundaries");
+        check(!ProtectionPolicy.referenceOutput(main.replace("Reason =0","Reason =1"))&&!ProtectionPolicy.referenceOutput(main+main),"cap and ambiguous reference controller rejected");
         check(SensorChoice.luxSensor(5,"Ambient Light","android.sensor.light"),"standard calibrated lux");
         check(SensorChoice.luxSensor(33171055,"Rear ALS","vendor.sensor.back_lux"),"vendor declared lux");
         check(!SensorChoice.luxSensor(33171111,"Ambient Light Raw Data","vendor.sensor.ambientlight.raw"),"raw channels are not lux");

@@ -58,7 +58,7 @@ int main(int argc,char**argv) {
             std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"settled\":"<<(core.settled()?"true":"false")<<",\"ambient_guard\":"<<(core.ambientGuard()?"true":"false")<<",\"fast_dark\":"<<(core.fastDark()?"true":"false")<<",\"alpha\":"<<core.alpha()<<",\"desired\":"<<core.desired()<<",\"night_scale\":"<<core.nightScale()<<",\"points\":[";
             bool comma=false;for(auto&p:core.learning.points){if(comma)o<<',';comma=true;o<<"{\"lux\":"<<p.lux<<",\"brightness\":"<<p.value<<",\"time\":"<<p.time<<'}';}
             o<<"],\"legacy_offset\":"<<core.learning.legacy_offset<<",\"local_hour\":"<<core.frame().local_hour<<",\"curve\":[";
-            for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.profile.toBrightness(baseNits(lux))<<','<<core.learning.target(lux,core.profile,core.nightScale())<<']';}
+            for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.base(lux)<<','<<core.target(lux)<<']';}
             o<<"],\"enabled\":"<<(core.config.enabled?"true":"false")<<",\"learning_enabled\":"<<(core.config.learning_enabled?"true":"false")<<",\"settings_learning\":"<<(core.config.settings_learning?"true":"false")<<",\"core_pid\":"<<getpid()<<",\"cpu_core_percent\":"<<(elapsed>0?100*(cpu-initialCpu)/elapsed:0)<<"}";return o.str();
         };
         while(std::getline(std::cin,line)) {
@@ -67,7 +67,18 @@ int main(int argc,char**argv) {
                 std::istringstream in(line);std::string cmd;in>>cmd;
                 auto end=[&](){std::string extra;if(in>>extra)throw std::runtime_error("trailing command arguments");};
                 if(cmd=="PANEL_READ") {end();std::cout<<readMainPanel()<<std::endl;continue;}
-                if(cmd=="USER") {
+                if(cmd=="POLICY") {
+                    std::string policy;in>>policy;end();
+                    if(policy!="v68"||hasUser)throw std::runtime_error("policy must precede user");
+                    core.reference=true;core.profile.id+="-v68curve2";store.profile=core.profile.id;core.reset();
+                } else if(cmd=="SLIDER") {
+                    int value;int64_t wall;if(!(in>>value>>wall)||!hasUser)throw std::runtime_error("invalid slider");end();
+                    auto previous=core.learning;
+                    if(core.slider(value,wall)) {
+                        try{store.save(core.learning);saveStatus="saved_reference_curve";}
+                        catch(...){core.learning=previous;throw;}
+                    }
+                } else if(cmd=="USER") {
                     int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");end();
                     if(!hasUser||store.user!=user){store.user=user;hasUser=true;core.reset();core.learning=store.load(saveStatus);last={false,0,"user_changed"};}
                 } else if(cmd=="SOURCE") {
