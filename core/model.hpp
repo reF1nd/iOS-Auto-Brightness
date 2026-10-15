@@ -66,14 +66,14 @@ private:
     double smooth_=-1, output_=-1, candidate_=-1;
     int64_t last_=0, hold_until_=0, candidate_since_=0, wake_until_=0;
     std::vector<double> trend_;
-    bool fast_dark_=false, sunlight_=false, dark_pending_=false, guard_confirmed_=false, guard_missing_=false;
+    bool fast_dark_=false, sunlight_=false, solar_decay_=false, dark_pending_=false, guard_confirmed_=false, guard_missing_=false;
     int64_t dark_since_=-1;
     double guard_front_=0, guard_back_=0, front_baseline_=-1;
     int64_t near_since_=-1, far_since_=-1;
     bool proximity_confirmed_=false;
     std::vector<Frame> ambient_history_;
     int high_confirm_=0;
-    int64_t high_exit_at_=-1, last_high_confirm_=-1;
+    int64_t high_exit_at_=-1, last_high_confirm_=-1, strong_since_=-1;
     double alpha_=0, desired_=0, sunlight_target_=0, ramp_from_=0, ramp_target_=-1;
     int64_t ramp_at_=0, ramp_duration_=0, fast_until_=0;
 };

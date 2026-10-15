@@ -127,10 +127,10 @@ double Controller::nightScale() const {
 }
 void Controller::reset() {
     frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
-    candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;dark_pending_=false;dark_since_=-1;
+    candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;solar_decay_=false;dark_pending_=false;dark_since_=-1;
     near_since_=-1;far_since_=-1;proximity_confirmed_=false;front_baseline_=-1;
     guard_front_=0;guard_back_=0;guard_confirmed_=false;guard_missing_=false;ambient_history_.clear();
-    high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;alpha_=0;desired_=0;
+    high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;strong_since_=-1;alpha_=0;desired_=0;
     sunlight_target_=0;ramp_from_=0;ramp_target_=-1;ramp_at_=0;ramp_duration_=0;fast_until_=0;
 }
 void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
@@ -144,18 +144,20 @@ Output Controller::step(const Frame& f) {
     const bool waking=f.automatic&&f.screen&&(!frame_.automatic||!frame_.screen);
     if(waking){reset();wake_until_=f.now+2000;}
     frame_=f;
+    auto clearStrong=[&](){high_confirm_=0;last_high_confirm_=-1;strong_since_=-1;};
     auto release=[&](const char* reason){output_=-1;ramp_duration_=0;ramp_target_=-1;return Output{false,0,reason};};
     if(!config.enabled) return release("disabled");
     if(!f.automatic) {reset();return release("manual_or_unknown");}
     if(!f.screen) {reset();return release("screen_off");}
-    if(f.blocked) return release("system_override");
+    if(f.blocked) {clearStrong();sunlight_=false;high_exit_at_=-1;return release("system_override");}
 
-    if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {smooth_=-1;dark_pending_=false;dark_since_=-1;guard_confirmed_=false;ambient_history_.clear();return release("sensor_unavailable");}
-    if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) return release("limits_unavailable");
+    if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {clearStrong();sunlight_=false;smooth_=-1;dark_pending_=false;dark_since_=-1;guard_confirmed_=false;ambient_history_.clear();return release("sensor_unavailable");}
+    if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) {clearStrong();return release("limits_unavailable");}
     // Brief proximity pulses must not expose a different system brightness.
     // Freeze an existing output (and learning) while confirming obstruction.
     // State/safety exits above always win, including a newly lowered cap.
     if(f.near) {
+        clearStrong();
         far_since_=-1;
         if(near_since_<0||f.now<near_since_)near_since_=f.now;
         if(f.now-near_since_>=600)proximity_confirmed_=true;
@@ -220,6 +222,20 @@ Output Controller::step(const Frame& f) {
     if(dual&&!dark_pending_)front_baseline_=front_baseline_<0?frontLux:
         front_baseline_+(1-std::pow(1-config.alpha_mid,dt/.25))*(frontLux-front_baseline_);
     if(dark_pending_)lux=smooth_;
+    // Confirm the selected lux coordinate before bypassing slow filters.
+    // Two illuminated sides need 250 ms; a single side needs 750 ms so a
+    // brief flash or direction change cannot trigger the fast path.
+    const bool safe=std::isfinite(f.temp)&&f.temp>=0&&f.temp<=45&&f.battery>=0&&(f.battery>=30||f.charging);
+    const bool strong=safe&&!dark_pending_&&f.now>=hold_until_&&lux>=config.high_lux_threshold;
+    if(strong) {
+        if(strong_since_<0||f.now<strong_since_){clearStrong();strong_since_=f.now;}
+        if(last_high_confirm_<0||f.now-last_high_confirm_>=250) {
+            last_high_confirm_=f.now;high_confirm_=std::min(2,high_confirm_+1);
+        }
+    } else clearStrong();
+    const bool bothBright=dual&&rearValid&&f.back>=config.high_lux_threshold&&frontLux>=config.high_lux_threshold;
+    const bool strongConfirmed=strong&&high_confirm_>=2&&f.now-strong_since_>=(bothBright?250:750);
+    if(strongConfirmed)smooth_=std::max(smooth_,lux);
     trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
     if(trend_.size()>=3) {
         const size_t n=trend_.size();const double first=trend_[n-3],middle=trend_[n-2];
@@ -248,27 +264,22 @@ Output Controller::step(const Frame& f) {
     if(f.now<hold_until_) return release("user_adjustment");
     // Let the display leave AOD and the light sensor settle before seeding
     // the output from current brightness. Never start a ramp from doze level.
-    if(f.now<wake_until_) return release("wake_settling");
+    const bool fastWake=f.now<wake_until_&&strongConfirmed;
+    if(f.now<wake_until_&&!fastWake) return release("wake_settling");
     // Explicit learned points take precedence over the time-of-day default.
     double target=learning.target(smooth_,profile,nightScale());
-    const bool safe=std::isfinite(f.temp)&&f.temp>=0&&f.temp<=45&&f.battery>=0&&(f.battery>=30||f.charging);
-    if(!safe) {sunlight_=false;high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;}
-    else if(!sunlight_) {
-        if(smooth_>=config.high_lux_threshold) {
-            if(last_high_confirm_<0 || f.now-last_high_confirm_>=250) {
-                last_high_confirm_=f.now;++high_confirm_;
-                if(high_confirm_>=2){sunlight_=true;high_exit_at_=-1;}
-            }
-        } else {high_confirm_=0;last_high_confirm_=-1;}
-    }
+    const bool wasSunlight=sunlight_;
+    if(!safe) {sunlight_=false;clearStrong();high_exit_at_=-1;}
+    else if(!sunlight_&&strongConfirmed) {sunlight_=true;high_exit_at_=-1;}
     if(sunlight_) {
         if(smooth_>=config.high_lux_threshold) {
             high_exit_at_=-1;
-            double boost=std::clamp((smooth_-config.high_lux_threshold)/config.high_lux_threshold,0.0,1.0)*config.high_lux_boost_max;
-            sunlight_target_=std::max(target*(1+boost),f.maximum*config.high_lux_min_pct);
+            const double progress=std::clamp((smooth_-config.high_lux_threshold)/config.high_lux_threshold,0.0,1.0);
+            const double floor=target+progress*std::max(0.0,f.maximum*config.high_lux_min_pct-target);
+            sunlight_target_=std::max(target*(1+progress*config.high_lux_boost_max),floor);
         } else if(smooth_<config.high_lux_threshold*.7) {
             if(high_exit_at_<0)high_exit_at_=f.now;
-            if(f.now-high_exit_at_>=config.high_lux_duration_ms){sunlight_=false;high_confirm_=0;last_high_confirm_=-1;}
+            if(f.now-high_exit_at_>=config.high_lux_duration_ms){sunlight_=false;clearStrong();}
         } else high_exit_at_=-1;
         if(sunlight_)target=sunlight_target_;
     }
@@ -279,17 +290,27 @@ Output Controller::step(const Frame& f) {
     // A manual adjustment still takes effect, but cannot teach a shaded sample.
     if(dark_pending_)target=output_>=0?output_:f.current;
     target=std::clamp(target,f.minimum,cap);
+    if(fastWake) {
+        // Do not dim a bright OEM wake frame or ramp from an AOD-level frame.
+        output_=std::clamp(std::max(f.current,target),f.minimum,cap);desired_=output_;
+        ramp_duration_=0;ramp_target_=-1;
+        return {true,output_,"sunlight"};
+    }
     if(output_<0)output_=std::clamp(f.current,f.minimum,cap);
+    const bool fastBright=strongConfirmed&&target>output_;
+    const bool solarExit=wasSunlight&&!sunlight_;
+    if(solarExit){solar_decay_=true;ramp_duration_=0;ramp_target_=-1;}
+    if(strongConfirmed)solar_decay_=false;
     // low/high refer to brightness level, not the direction of the change.
     double hysteresis=config.hyst_low+(config.hyst_high-config.hyst_low)*std::clamp(output_,0.0,1.0);
     bool changed=std::abs(target-output_)>std::max(.00001,output_*hysteresis);
     if(changed) {
         bool reverse=ramp_target_>=0 && (target-output_)*(ramp_target_-output_)<0;
-        if(ramp_duration_==0 || reverse || (fast_dark_&&ramp_duration_>200)) {
+        if(ramp_duration_==0 || reverse || (fast_dark_&&!solar_decay_&&ramp_duration_>200) || (fastBright&&ramp_duration_>400)) {
             // Time spent asleep preceded this target; it must not consume the new ramp.
             ramp_from_=output_;ramp_at_=f.now-static_cast<int64_t>(std::min(dt,.25)*1000);
             double distance=std::abs(target-output_);
-            ramp_duration_=rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))));
+            ramp_duration_=solar_decay_&&target<output_?3000:(fastBright?400:(rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))))));
         }
         ramp_target_=target;
         double t=std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
@@ -301,7 +322,7 @@ Output Controller::step(const Frame& f) {
         if(output_<previous)output_=std::max(output_,previous*std::pow(.8,std::min(dt,.25)));
         if(t>=1&&std::abs(output_-target)<.00001)ramp_duration_=0;
         desired_=target;
-    } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;}
+    } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;solar_decay_=false;}
     output_=std::clamp(output_,f.minimum,cap);
     return {true,output_,lowBattery?"low_battery_limit":(dark_pending_?"ambient_guard":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto"))))};
 }

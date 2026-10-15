@@ -68,6 +68,13 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   elements.get('high_lux_min_pct').value='0.3';elements.get('high_lux_min_pct').listeners.input();
   assert.match(elements.get('previewState').textContent,/未保存/);
   assert.ok(elements.get('chart').children.some(e=>e.attrs.stroke==='#af52de'));
+  const oldCurve=runtime.curve,oldCap=runtime.maximum;
+  runtime.curve=[[15000,.1,.1],[22500,.1,.1],[30000,.1,.1]];runtime.maximum=1;runtime.local_hour=12;
+  elements.get('high_lux_min_pct').value='0.9';elements.get('high_lux_min_pct').listeners.input();
+  const solar=elements.get('chart').children.find(e=>e.attrs.stroke==='#af52de');
+  const solarY=solar.attrs.d.split(' ').map(p=>Number(p.split(',')[1]));
+  for(const [i,expected] of [182,110,38].entries())assert.ok(Math.abs(solarY[i]-expected)<1e-8,'solar preview rises continuously from threshold');
+  runtime.curve=oldCurve;runtime.maximum=oldCap;
   elements.get('liveLog').checked=true;
   await elements.get('refresh').onclick();assert.equal(elements.get('log').textContent,'recent log');
   elements.get('clearLog').onclick();

@@ -14,7 +14,7 @@ const fields = [
   ['spike_up','上升尖峰阈值',2,50,.5],['spike_down','下降尖峰阈值',.001,.5,.001],
   ['hyst_low','低亮度回差',0,.2,.005],['hyst_high','高亮度回差',0,.2,.005],
   ['high_lux_threshold','阳光模式照度阈值',5000,100000,500],['high_lux_boost_max','阳光最高增益',0,1,.01],
-  ['high_lux_min_pct','强光亮度下限比例',0,1,.01],['high_lux_duration_ms','强光退出延迟（毫秒）',1000,20000,500],
+  ['high_lux_min_pct','充分强光下限（两倍阈值）',0,1,.01],['high_lux_duration_ms','强光退出延迟（毫秒）',1000,20000,500],
   ['user_hold_ms','手动调整后等待（毫秒）',2000,30000,500],
   ['log_max_bytes','日志上限（字节）',65536,8388608,65536],['log_max_backups','日志备份份数',1,8,1],
 ];
@@ -108,7 +108,7 @@ function preview() {
       const a=knots[i-1],b=knots[i];return a[1]+(b[1]-a[1])*(Math.log1p(lux)-Math.log1p(a[0]))/(Math.log1p(b[0])-Math.log1p(a[0]));
     };
     const threshold=Number(c.high_lux_threshold??15000), gain=Number(c.high_lux_boost_max??.35),floor=Number(c.high_lux_min_pct??.9),cap=runtime.maximum??1;
-    chart(runtime.curve.map(p=>{const normal=learned(p[0]);return [p[0],p[1]*scale,normal,p[0]<threshold?normal:Math.min(cap,Math.max(normal*(1+Math.min(1,(p[0]-threshold)/threshold)*gain),cap*floor))];}),runtime);
+    chart(runtime.curve.map(p=>{const normal=learned(p[0]),progress=Math.max(0,Math.min(1,(p[0]-threshold)/threshold));return [p[0],p[1]*scale,normal,Math.min(cap,Math.max(normal*(1+progress*gain),normal+progress*Math.max(0,cap*floor-normal)))];}),runtime);
     $('previewState').textContent=dirty?'未保存配置预览（稳态示意，不包含过渡、保护与限温）':'已保存配置曲线（稳态示意）';
   }catch(e){note(e.message);}finally{runtime=live;if(!live)$('previewState').textContent='离线示例预览：未经当前屏幕校准，不代表实际输出';}
 }
