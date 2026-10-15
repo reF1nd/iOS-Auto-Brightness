@@ -24,3 +24,6 @@ javac -cp build/bridge/classes -d build/bridge/test-classes tests/ParityCompleti
 java -cp build/bridge/classes:build/bridge/test-classes ParityCompletionTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/InteractionGuardTest.java
 java -cp build/bridge/classes:build/bridge/test-classes InteractionGuardTest
+
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/DirectBacklightTest.java
+java -cp build/bridge/classes:build/bridge/test-classes DirectBacklightTest

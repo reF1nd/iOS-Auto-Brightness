@@ -10,7 +10,7 @@
 
 服务启动需可读的 `/proc/<pid>/cgroup` 和 `mountinfo`。检测到 `uid_N` / `pid_N` 应用专属分组时，只把启动器自身迁移至对应 cgroup v1/v2 的根分组；共享的系统调度分组不做调整。受限挂载命名空间看不到根分组或系统拒绝迁移时，启动失败并报告原因，不假报可独立运行。该处理不修改管理器进程或系统应用回收策略。
 
-- 必需：默认屏幕、临时亮度设置、亮度上下限、当前亮度、当前用户和系统设置读取。失败时不接管屏幕，独立诊断和配置修复仍可用。
+- 必需：默认屏幕、已绑定背光节点、brightness/HAL 相同映射、亮度上下限及限亮原因、当前亮度、当前用户和系统设置读取。失败时不接管屏幕，独立诊断和配置修复仍可用。
 - 系统校准：只读取当前物理屏幕对应的 `mNits` 与 `mBrightness`，不把 HAL `mBacklight` 当成系统亮度。校验长度、有限数值、范围和严格递增。不同面板、不同标定数据使用独立的学习身份；原小米映射完整匹配时保留旧身份和学习记录。
 - 无校准：使用显式标记的通用比例曲线，仍遵守系统上下限。亮度事件的 nits 无法可靠换算，自动事件学习禁用并解释原因，仍可显式开启一次调节学习；不会把其他机型标定套上来。通用曲线需要用户实测，不保证主观亮度与已校准设备相同。
 - 自动学习：需要系统真实调节事件和校准映射。事件缺失或字段不兼容会报告错误；显式学习回退见下方 beta.8 说明。
@@ -39,9 +39,9 @@ sh /data/adb/modules/ios_auto_brightness/control.sh config-read
 
 ## beta.8：系统保护与兼容回退
 
-系统保护优先于调光、阳光增强和学习。读取 `BrightnessInfo.brightnessMaxReason`，非零原因（包括未知厂商扩展）一律释放临时亮度；`PowerManager` 热状态从 LIGHT 开始同样释放，读取失败也不继续控制。监听热状态变化并轮询复核，两个信号持续正常 10 秒后才能恢复。保持使用系统临时亮度接口及实时上下限，不写背光、温控节点，不改温控配置或限亮原因。可见信号之外的厂商底层保护仍由系统执行。
+系统保护优先于调光、阳光增强和学习。读取 `BrightnessInfo.brightnessMaxReason`，非零原因（包括未知厂商扩展）一律停止直接背光输出；`PowerManager` 热状态从 LIGHT 开始同样释放，读取失败也不继续控制。监听热状态变化并轮询复核，两个信号持续正常 10 秒后才能恢复。直接背光写入按实时亮度上限截断，不改背光权限、温控配置或限亮原因。若驱动回报比请求值低，停止写入，不尝试顶回目标。未公开的厂商保护无法仅凭框架状态证明完全兼容；节点保持可写也不是所有温控路径有效的充分证明。
 
-稳定目标与实际输出不同不会直接触发回拉。仅当主屏当前 dump 明确显示 `automatic`、临时亮度为 NaN、限亮原因为 0，且下一帧保护、应用覆盖、HDR、用户操作等检查都通过，才重新提交丢失的临时请求。无法确认的 OEM 格式不自动重试。
+每秒只读核对主屏 dump：必须明确显示无附加修饰的 `automatic`、临时亮度为 NaN、限亮原因为 0；结果最多使用两秒，过期或未知格式暂停输出。直接写入前再次核对亮屏、自动模式、温控、上限、应用覆盖、HDR 和背光节点归属。
 
 没有事件接口或 nits 校准时，WebUI 的“学习下一次手动调节”提供 30 秒显式窗口：用户随后操作亮度条，适配层等待实际归一化亮度稳定，再调用核心学习。不会把未经确认的 Settings 变化当作偏好，也不会用固定 255/Gamma 换算。无光感、遮挡、光线不稳定、熄屏、切用户或系统保护均取消学习。此回退同时支持设置通知和当前用户设置轮询，不依赖 root 进程一定收到通知；仅显式开启的窗口内将设置变化作为此次调节的候选。
 
@@ -49,7 +49,7 @@ sh /data/adb/modules/ios_auto_brightness/control.sh config-read
 
 离线 `control.sh log-read` 按时间拼接轮转备份和当前日志的最近 80 行；`log-clear` 清除当前日志及备份，与轮转互斥。健康诊断检查进程身份、启动时间、同次开机和心跳新鲜度；CPU 分开报告 Java 桥接与 native 核心的进程平均占用（不含 supervisor 和短命 dumpsys 子进程）。
 
-Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已知能力缺失不会冒充字段读取成功：状态显示 `thermal_and_system_cap_only`，使用系统热状态及实时亮度上下限保护，禁用丢失输出的自动重试。Android 13+ 应有该字段而缺失、或热状态查询失败时，暂停接管。接口依据：[Android 12L](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-12.1.0_r1/core/java/android/hardware/display/BrightnessInfo.java)、[Android 13](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-13.0.0_r1/core/java/android/hardware/display/BrightnessInfo.java)。
+Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已知能力缺失不会冒充字段读取成功：状态显示 `thermal_and_system_cap_only`，但直接背光模式仍要求实际存在的限亮原因字段，缺失则暂停输出（诊断/观察可用）。Android 13+ 应有该字段而缺失、或热状态查询失败时，暂停接管。接口依据：[Android 12L](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-12.1.0_r1/core/java/android/hardware/display/BrightnessInfo.java)、[Android 13](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-13.0.0_r1/core/java/android/hardware/display/BrightnessInfo.java)。
 
 可选 Sensor 仅包含标准 TYPE_LIGHT 或厂商明确声明 lux 的类型；原始通道（raw）和视场辅助量（fov）从选择、后置发现和 dumpsys 自动发现中排除。只按名称含 light/ALS 判断单位并不可靠。
 
@@ -64,4 +64,22 @@ Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已�
 
 ## 拖动亮度条期间的控制权
 
-优先使用系统亮度变化事件监听：新系统的私有亮度事件标志与旧系统的亮度事件标志按实际接口探测。不可用时，亮屏自动模式最多每 250 毫秒检查一次输出。模块比较框架报告值与自身近期请求，外部接管只用于暂停写入，不作为学习证据。确认共享临时亮度请求已清除后才恢复常规保持期；只读显示诊断无法确认时保持暂停并报告 `temporary_state_unknown`，熄屏或切换模式后重置。此机制不读取触摸坐标，也不能原子地锁住 SystemUI 与显示服务之间的所有竞态，不宣称所有 ROM 都能零延迟识别。
+优先使用系统亮度变化事件监听：新系统的私有亮度事件标志与旧系统的亮度事件标志按实际接口探测。不可用时，亮屏自动模式最多每 250 毫秒检查一次输出。直接背光模式将框架报告值作为独立的系统输出基线；它不应跟随模块节点目标。框架改变或节点被其他写入者接管时暂停写入，不作为学习证据。确认共享临时亮度请求已清除后才恢复常规保持期；只读显示诊断无法确认时保持暂停并报告 `temporary_state_unknown`，熄屏或切换模式后重置。此机制不读取触摸坐标，也不能原子地锁住 SystemUI 与显示服务之间的所有竞态，不宣称所有 ROM 都能零延迟识别。
+
+
+## 直接背光输出与节点绑定
+
+输出后端为 `direct_sysfs`。已验证的 altdb 主屏校准可自动绑定 `panel0-backlight`；其他设备在 `/data/adb/ios_auto_brightness/backlight.conf` 显式填写两项后重启服务：
+
+```properties
+display=实际默认主屏的 uniqueId
+node=已确认属于该主屏的背光目录名
+```
+
+节点限定在 `/sys/class/backlight` 下，不能填任意路径。绑定不代表已经验证：启动仍须读取所选物理屏的 `mBrightness`/`mBacklight` 并确认逐点相同，再确认节点请求值、驱动回报与系统归一化亮度乘 `max_brightness` 的结果连续稳定匹配至少一秒。不支持猜测主屏、非相同映射、缺少驱动回报、缺少限亮原因的设备，也不会静默改回临时亮度接口。现有校准与学习存储的坐标不变。
+
+亮屏自动模式最多每 100 ms 核对背光。外部改写后至少等待两秒，再重新验证稳定的框架/节点匹配；不能用超时解除不明驱动降亮。写入前复核 max_brightness、原值与驱动回报；不锁权限，仍存在最后检查和系统写入之间无法原子消除的竞态。
+
+每次实际改变节点前保存恢复记录（绑定启动标识、物理屏与最后请求值）。正常停止、桥接异常后监督恢复和下一次启动只在节点仍是最后请求值、屏幕仍亮且驱动没有额外降亮时恢复当下框架值，并遵守最新系统上限；保护生效时恢复绝不提高亮度。若整个监督进程树被 SIGKILL，立即恢复无法保证，后续系统写入或服务启动才会接续；不保留禁用后的守护进程。观察模式不写背光或恢复记录。
+
+WebUI 分别显示输出方式、节点状态、框架报告和节点请求/驱动回报。直接写节点本身不移动系统滑块，不承诺滑块与实际输出完全同步，也不把节点数值称为实测屏幕亮度。
