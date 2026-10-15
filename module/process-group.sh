@@ -36,7 +36,7 @@ iab_cgroup_targets() {
 }
 iab_cgroup_write() { printf '%s\n' "$$" > "$1"; }
 iab_detach_cgroups() {
-  IAB_CGROUP_MOVED=0
+  export IAB_CGROUP_MOVED=0
   iab_groups=$(iab_cgroup_membership) || return 1
   iab_targets=$(iab_cgroup_targets "$iab_groups") || {
     echo 'Cannot resolve app cgroup roots; refusing dependent service launch' >&2
@@ -48,7 +48,7 @@ iab_detach_cgroups() {
       echo "Cannot leave app cgroup via $iab_target" >&2
       return 1
     }
-    IAB_CGROUP_MOVED=1
+    export IAB_CGROUP_MOVED=1
   done
   iab_groups=$(iab_cgroup_membership) || return 1
   iab_remaining=$(iab_cgroup_targets "$iab_groups") || return 1
