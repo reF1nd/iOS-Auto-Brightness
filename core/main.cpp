@@ -57,6 +57,12 @@ int main(int argc,char**argv) {
                 } else if(cmd=="CONFIG") {
                     std::string path;if(!(in>>std::quoted(path)))throw std::runtime_error("missing config file");
                     auto proposed=Config::parse(readFile(path));atomicWrite(conf,proposed.serialize());core.config=proposed;core.reset();configStatus="applied";
+                } else if(cmd=="RELOAD") {
+                    try {
+                        auto proposed=Config::parse(readFile(conf));
+                        if(proposed.serialize()!=core.config.serialize()){core.config=proposed;core.reset();}
+                        configStatus="applied";
+                    }catch(const std::exception& e){configStatus=std::string("invalid: ")+e.what();throw;}
                 } else if(cmd=="CONFIG_GET") {std::cout<<"{\"ok\":true,\"data\":"<<jsonString(core.config.serialize())<<'}'<<std::endl;continue;
                 } else if(cmd=="EXPORT") {if(!hasUser)throw std::runtime_error("user required");std::cout<<"{\"ok\":true,\"data\":"<<jsonString(store.encode(core.learning))<<'}'<<std::endl;continue;
                 } else if(cmd=="IMPORT") {

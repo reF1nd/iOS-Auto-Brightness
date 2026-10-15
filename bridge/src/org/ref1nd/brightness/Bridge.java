@@ -53,7 +53,8 @@ public final class Bridge implements SensorEventListener {
     int user=-1;
     long userSerial=-1, lastEvent=System.currentTimeMillis(), frontAt=0, pendingAt=0;
     long changedAt=-10000, heartbeat=SystemClock.elapsedRealtime(), lastFrame=0, lastThermal=0, lastStatus=0;
-    long started=SystemClock.elapsedRealtime();
+    long started=SystemClock.elapsedRealtime(), lastConfigCheck=0, backAt=0;
+    String configText="";
     float temperature=-1, lastWrite=-1;
     int battery=-1;
     boolean charging=false;
@@ -195,7 +196,7 @@ public final class Bridge implements SensorEventListener {
     @Override public void onSensorChanged(SensorEvent e) {
         float v=e.values[0];if(!Float.isFinite(v)||v<0)return;
         if(e.sensor==front){frontLux=v;frontAt=SystemClock.elapsedRealtime();}
-        else if(e.sensor==back)backLux=v;
+        else if(e.sensor==back){backLux=v;backAt=SystemClock.elapsedRealtime();}
         else if(e.sensor==proximity)near=v<Math.min(5,proximity.getMaximumRange());
     }
     @Override public void onAccuracyChanged(Sensor s,int accuracy) {}
@@ -248,7 +249,10 @@ public final class Bridge implements SensorEventListener {
                 }else eventStatus="discarded_state_changed";
                 pending=null;
             }
-        }catch(Exception e){eventStatus="error: "+rootCause(e);}
+        }catch(Exception e){
+            eventStatus="error: "+rootCause(e);
+            if(pending!=null&&now-pendingAt>10000)pending=null;
+        }
     }
     static String rootCause(Throwable e){while(e.getCause()!=null)e=e.getCause();return e.toString();}
     void tick() {
@@ -266,6 +270,18 @@ public final class Bridge implements SensorEventListener {
             boolean automatic=mode(user)==1;
             Display main=display.getDisplay(0);boolean on=main!=null&&main.getState()==Display.STATE_ON;
             registerSensors(automatic&&on);
+            if(registered&&frontAt>0&&now-frontAt>30000) {
+                // Request a fresh initial event from on-change sensors instead of using stale data forever.
+                registerSensors(false);registerSensors(automatic&&on);frontAt=0;
+            }
+            if(now-lastConfigCheck>=2000) {
+                lastConfigCheck=now;
+                String fresh=read(new File(state,"config.conf"),32768);
+                if(!fresh.equals(configText)) {
+                    configText=fresh;
+                    try{request("RELOAD");}catch(Exception e){System.err.println("config: "+rootCause(e));}
+                }
+            }
             Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
             if(info==null)throw new IOException("brightness limits unavailable");
             float minimum=number(info,"brightnessMinimum"),maximum=number(info,"brightnessMaximum"),current=number(info,"brightness");
@@ -274,7 +290,7 @@ public final class Bridge implements SensorEventListener {
             // On-change light sensors may be silent while stable; registration stays active.
             float lux=registered&&frontAt>=started?frontLux:-1;
             eligible=automatic&&on&&!blocked&&!near&&lux>=0;
-            result=request(String.format(Locale.ROOT,"FRAME %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0));
+            result=request(String.format(Locale.ROOT,"FRAME %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d",now,automatic?1:0,on?1:0,lux,now-backAt<30000?backLux:-1,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0));
             if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
             if(result.optBoolean("apply")&&now-changedAt>=2000&&pending==null&&!observe) {
                 float target=(float)result.getDouble("target");
@@ -287,7 +303,7 @@ public final class Bridge implements SensorEventListener {
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
-                .put("current",current).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now);
+                .put("current",current).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
             String reason=result.optString("reason");
             if(!reason.equals(previousReason)){System.out.println("state="+reason+" storage="+result.optString("storage"));previousReason=reason;}
             if(now-lastStatus>=1000){replace(new File(state,"status.json"),result.toString());lastStatus=now;}
