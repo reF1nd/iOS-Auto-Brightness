@@ -320,13 +320,14 @@ public final class Bridge implements SensorEventListener {
             bridgeError="";
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
+                .put("front_lux",frontLux).put("back_lux",backLux)
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
                 .put("current",current).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
             String reason=result.optString("reason");
             if(!reason.equals(previousReason)){System.out.println("state="+reason+" storage="+result.optString("storage"));previousReason=reason;}
             if(now-lastStatus>=1000){replace(new File(state,"status.json"),result.toString());lastStatus=now;}
         }catch(Exception e) {
-            bridgeError=rootCause(e);System.err.println("bridge: "+bridgeError);
+            String error=rootCause(e);if(!error.equals(bridgeError))System.err.println("bridge: "+error);bridgeError=error;
             try{clearOverride();}catch(Exception ignored){}
             try{result=new JSONObject().put("ok",false).put("bridge","degraded").put("error",bridgeError).put("heartbeat_ms",now);replace(new File(state,"status.json"),result.toString());}catch(Exception ignored){}
             if(!core.isAlive()) {shutdown();System.exit(1);}

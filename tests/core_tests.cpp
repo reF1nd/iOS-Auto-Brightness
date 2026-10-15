@@ -43,6 +43,13 @@ int main(){
         Controller c;c.profile=p;
         Frame f;f.now=1000;f.automatic=true;f.screen=true;f.lux=100;f.current=.1;f.minimum=.001;f.maximum=.4;f.battery=80;f.temp=35;
         check(c.step(f).apply,"valid auto frame controls display");
+        f.back=0;f.now+=250;c.step(f);
+        check(c.smoothLux()==100,"covered rear sensor must not darken a stable front sensor");
+        f.lux=2000;f.now+=250;c.step(f);
+        check(c.smoothLux()==100,"rear disagreement confirms a front spike before applying");
+        f.now+=1600;c.step(f);
+        check(c.smoothLux()>100,"persistent front light must eventually override a covered rear sensor");
+        c.reset();f.lux=100;c.step(f);
         check(c.learn(100,.15,10000),"explicit valid adjustment accepted");
         check(!c.step(f).apply,"user adjustment hold");f.now+=6000;
         check(c.step(f).apply,"control resumes after user hold");

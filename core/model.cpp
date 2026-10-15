@@ -138,15 +138,16 @@ Output Controller::step(const Frame& f) {
     if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {smooth_=-1;return release("sensor_unavailable");}
     if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) return release("limits_unavailable");
     double lux=f.lux;
-    // Back sensor only limits isolated front-side spikes; it never controls the rear display.
-    if(std::isfinite(f.back)&&f.back>=0&&f.back<lux/config.spike_up) lux=std::max(f.back*config.spike_up,1.0);
+    // A covered rear sensor is normal on a desk. It can extend spike
+    // confirmation, but must never cap a stable front-light measurement.
     double dt=last_?std::clamp((f.now-last_)/1000.0,.01,2.0):.25;last_=f.now;
     if(smooth_<0) smooth_=lux;
     else {
         double ratio=(lux+1)/(smooth_+1);
         if(ratio>config.spike_up||ratio<config.spike_down) {
             if(candidate_<0||std::abs(std::log1p(candidate_)-std::log1p(lux))>.4) {candidate_=lux;candidate_since_=f.now;}
-            if(f.now-candidate_since_<750) lux=smooth_;
+            const bool rearDisagrees=ratio>config.spike_up&&std::isfinite(f.back)&&f.back>=0&&f.back<lux/config.spike_up;
+            if(f.now-candidate_since_<(rearDisagrees?1500:750)) lux=smooth_;
         } else candidate_=-1;
         double diff=std::abs(lux-smooth_)/std::max(smooth_,1.0);
         double a=diff>=config.fast_threshold?config.alpha_fast:(diff<=config.slow_threshold?config.alpha_slow:config.alpha_mid);
