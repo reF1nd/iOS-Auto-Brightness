@@ -109,7 +109,7 @@ public final class Bridge implements SensorEventListener {
         global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
         displayId=(String)call(display.getDisplay(0),"getUniqueId",new Class<?>[]{});
         Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
-        for(String f:new String[]{"brightness","brightnessMinimum","brightnessMaximum"})number(info,f);
+        for(String f:new String[]{"brightness","adjustedBrightness","brightnessMinimum","brightnessMaximum"})number(info,f);
         flag(info,"isBrightnessOverrideByWindow");
         // Require the actual target-ROM interfaces before starting a controller.
         display.getClass().getMethod("setTemporaryBrightness",int.class,float.class);
@@ -302,14 +302,15 @@ public final class Bridge implements SensorEventListener {
             }
             Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
             if(info==null)throw new IOException("brightness limits unavailable");
-            float minimum=number(info,"brightnessMinimum"),maximum=number(info,"brightnessMaximum"),current=number(info,"brightness");
+            float minimum=number(info,"brightnessMinimum"),maximum=number(info,"brightnessMaximum"),current=number(info,"adjustedBrightness");
             boolean blocked=flag(info,"isBrightnessOverrideByWindow")||integer(info,"highBrightnessMode")==2;
             thermal(now);
             // On-change light sensors may be silent while stable; registration stays active.
             float lux=registered&&frontAt>=started?frontLux:-1;
             eligible=automatic&&on&&!blocked&&!near&&lux>=0;
             result=request(String.format(Locale.ROOT,"FRAME %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d",now,automatic?1:0,on?1:0,lux,now-backAt<30000?backLux:-1,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0));
-            if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
+            if(!automatic||!on){pending=null;lastEvent=System.currentTimeMillis();}
+            else if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
             if(result.optBoolean("apply")&&now-changedAt>=2000&&pending==null&&!observe) {
                 float target=(float)result.getDouble("target");
                 if(!overridden||Math.abs(target-lastWrite)>.00001) {
@@ -322,7 +323,7 @@ public final class Bridge implements SensorEventListener {
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
                 .put("front_lux",frontLux).put("back_lux",backLux)
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
-                .put("current",current).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
+                .put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
             String reason=result.optString("reason");
             if(!reason.equals(previousReason)){System.out.println("state="+reason+" storage="+result.optString("storage"));previousReason=reason;}
             if(now-lastStatus>=1000){replace(new File(state,"status.json"),result.toString());lastStatus=now;}

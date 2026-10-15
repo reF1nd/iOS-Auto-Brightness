@@ -37,38 +37,39 @@ int main(int argc,char**argv) {
             try {
                 if(line.size()>65536)throw std::runtime_error("command too large");
                 std::istringstream in(line);std::string cmd;in>>cmd;
+                auto end=[&](){std::string extra;if(in>>extra)throw std::runtime_error("trailing command arguments");};
                 if(cmd=="USER") {
-                    int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");
+                    int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");end();
                     if(!hasUser||store.user!=user){store.user=user;hasUser=true;core.reset();core.learning=store.load(saveStatus);last={false,0,"user_changed"};}
                 } else if(cmd=="FRAME") {
-                    Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");
+                    Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");end();
                     if(!hasUser)throw std::runtime_error("user required");
                     last=core.step(f);
-                } else if(cmd=="HOLD") {int64_t now;if(!(in>>now))throw std::runtime_error("missing time");core.hold(now);last={false,0,"user_adjustment"};
+                } else if(cmd=="HOLD") {int64_t now;if(!(in>>now))throw std::runtime_error("missing time");end();core.hold(now);last={false,0,"user_adjustment"};
                 } else if(cmd=="EVENT") {
-                    int64_t time;double lux,value;if(!(in>>time>>lux>>value)||!hasUser)throw std::runtime_error("invalid event");
+                    int64_t time;double lux,value;if(!(in>>time>>lux>>value)||!hasUser)throw std::runtime_error("invalid event");end();
                     auto previous=core.learning;
                     if(core.learn(lux,value,time)) {
                         try{store.save(core.learning);saveStatus="saved";}catch(const std::exception&e){core.learning=previous;saveStatus=std::string("save_failed: ")+e.what();throw;}
                     }else {std::cout<<"{\"ok\":true,\"accepted\":false}"<<std::endl;continue;}
-                } else if(cmd=="CLEAR") {
+                } else if(cmd=="CLEAR") {end();
                     if(!hasUser)throw std::runtime_error("user required");
                     store.save({},true);core.learning={};saveStatus="cleared";
                 } else if(cmd=="CONFIG") {
-                    std::string path;if(!(in>>std::quoted(path)))throw std::runtime_error("missing config file");
+                    std::string path;if(!(in>>std::quoted(path)))throw std::runtime_error("missing config file");end();
                     auto proposed=Config::parse(readFile(path));atomicWrite(conf,proposed.serialize());core.config=proposed;core.reset();configStatus="applied";
-                } else if(cmd=="RELOAD") {
+                } else if(cmd=="RELOAD") {end();
                     try {
                         auto proposed=Config::parse(readFile(conf));
                         if(proposed.serialize()!=core.config.serialize()){core.config=proposed;core.reset();}
                         configStatus="applied";
                     }catch(const std::exception& e){configStatus=std::string("invalid: ")+e.what();throw;}
-                } else if(cmd=="CONFIG_GET") {std::cout<<"{\"ok\":true,\"data\":"<<jsonString(core.config.serialize())<<'}'<<std::endl;continue;
-                } else if(cmd=="EXPORT") {if(!hasUser)throw std::runtime_error("user required");std::cout<<"{\"ok\":true,\"data\":"<<jsonString(store.encode(core.learning))<<'}'<<std::endl;continue;
+                } else if(cmd=="CONFIG_GET") {end();std::cout<<"{\"ok\":true,\"data\":"<<jsonString(core.config.serialize())<<'}'<<std::endl;continue;
+                } else if(cmd=="EXPORT") {end();if(!hasUser)throw std::runtime_error("user required");std::cout<<"{\"ok\":true,\"data\":"<<jsonString(store.encode(core.learning))<<'}'<<std::endl;continue;
                 } else if(cmd=="IMPORT") {
-                    std::string path;if(!(in>>std::quoted(path))||!hasUser)throw std::runtime_error("missing import file");auto l=store.decode(readFile(path));store.save(l,true);core.learning=l;saveStatus="imported";core.reset();
+                    std::string path;if(!(in>>std::quoted(path))||!hasUser)throw std::runtime_error("missing import file");end();auto l=store.decode(readFile(path));store.save(l,true);core.learning=l;saveStatus="imported";core.reset();
                 } else if(cmd=="MIGRATE") {
-                    std::string path;if(!(in>>std::quoted(path))||!hasUser)throw std::runtime_error("missing migration file");
+                    std::string path;if(!(in>>std::quoted(path))||!hasUser)throw std::runtime_error("missing migration file");end();
                     if(saveStatus!="new")throw std::runtime_error("migration requires new state");
                     auto text=readFile(path,256);std::istringstream old(text);std::string record;old>>record;
                     if(record.rfind("user_offset=",0)!=0)throw std::runtime_error("invalid legacy format");
@@ -76,7 +77,7 @@ int main(int argc,char**argv) {
                     if(used!=record.size()-12||!std::isfinite(v)||std::abs(v)>.3)throw std::runtime_error("invalid legacy offset");
                     Learning l;l.legacy_offset=v;store.save(l);core.learning=l;saveStatus="migrated_offset";
                 } else if(cmd!="STATUS") throw std::runtime_error("unknown command");
-                std::string extra;if(in>>extra)throw std::runtime_error("trailing command arguments");
+                end();
                 std::cout<<status()<<std::endl;
             }catch(const std::exception& e){std::cout<<"{\"ok\":false,\"error\":"<<jsonString(e.what())<<'}'<<std::endl;}
         }

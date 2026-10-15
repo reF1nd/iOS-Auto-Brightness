@@ -42,6 +42,10 @@ with tempfile.TemporaryDirectory() as state:
     p.stdin.flush()
     assert not json.loads(p.stdout.readline())['ok']
     assert 'alpha_fast=0.45' in ask(p, 'CONFIG_GET')['data']
+    p.stdin.write('CLEAR unexpected\n')
+    p.stdin.flush()
+    assert not json.loads(p.stdout.readline())['ok']
+    assert len(ask(p, 'STATUS')['points']) == 1  # Rejected commands cannot mutate.
     ask(p, 'CLEAR')
     assert ask(p, 'STATUS')['points'] == []
     imported = os.path.join(state, 'import.dat')
