@@ -125,14 +125,17 @@ double Learning::target(double lux,const Profile& p,double baseScale) const {
 double Learning::referenceTarget(double lux) const {
     const auto base=[](double l){return referenceBrightness(referenceNits(l));};
     const double bound=std::log(4.0);
-    if(points.empty())return std::clamp(base(lux)*std::exp(std::clamp(legacy_offset/.3,-1.0,1.0)*bound),0.0,1.0);
+    // The small pedestal lets a preference raise a zero-valued dark baseline.
+    // A relative lower bound prevents negative residuals creating a zero plateau.
+    const auto shifted=[](double value,double delta){return std::clamp((value+.005)*std::exp(delta)-.005,value*.25,1.0);};
+    if(points.empty())return shifted(base(lux),std::clamp(legacy_offset/.3,-1.0,1.0)*bound);
     bool cached=fitted_offset==legacy_offset&&fitted_from.size()==points.size();
     for(size_t i=0;cached&&i<points.size();i++)cached=points[i].lux==fitted_from[i].lux&&points[i].value==fitted_from[i].value;
     if(cached)return interpolate(std::log1p(lux),fitted_x,fitted_y);
     // All samples contribute bounded residuals. A unit-weight zero-offset prior
     // keeps the preset curve authoritative; no sample is an interpolation anchor.
     std::vector<double> px,delta,xs,ys;
-    for(const auto& p:points){px.push_back(std::log1p(p.lux));delta.push_back(std::clamp(std::log(std::max(p.value,.00001)/std::max(base(p.lux),.00001)),-bound,bound));}
+    for(const auto& p:points){px.push_back(std::log1p(p.lux));delta.push_back(std::clamp(std::log((p.value+.005)/(base(p.lux)+.005)),-bound,bound));}
     constexpr int count=129;
     for(int i=0;i<count;i++) {
         double x=i*std::log1p(200000.0)/(count-1),sum=0,weight=1;
@@ -140,7 +143,7 @@ double Learning::referenceTarget(double lux) const {
             double distance=(x-px[j])/std::log(10.0),w=1/(1+distance*distance);
             sum+=w*delta[j];weight+=w;
         }
-        xs.push_back(x);ys.push_back(std::clamp(base(std::expm1(x))*std::exp(std::clamp(legacy_offset/.3*bound+sum/weight,-bound,bound)),0.0,1.0));
+        xs.push_back(x);ys.push_back(shifted(base(std::expm1(x)),std::clamp(legacy_offset/.3*bound+sum/weight,-bound,bound)));
     }
     // Isotonic projection prevents contradictory observations from producing a
     // falling brightness curve. It does not force the curve through observations.

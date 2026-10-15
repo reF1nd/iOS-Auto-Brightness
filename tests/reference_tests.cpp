@@ -31,6 +31,8 @@ int main(){
     check(restored.referenceTarget(10)==l.referenceTarget(10),"restart reconstructs identical preference curve");
     Learning dimPreference;dimPreference.add(70.51677506,.0006866859953,1000,false);
     check(dimPreference.referenceTarget(6.488)>.01,"dark preference must not collapse adjacent lux to zero");
+    Learning blackPreference;blackPreference.add(0,.01,1000,false);
+    check(blackPreference.referenceTarget(0)>.001,"pure black can still learn a brighter preference");
     Controller rear;rear.reference=true;rear.learning=dimPreference;rear.profile={"test",{1,3500},{.001,1}};
     Frame r;r.now=1000;r.automatic=true;r.screen=true;r.front=6.488;r.lux=6.488;r.back=0;r.temp=30;r.battery=80;r.minimum=.000366256;r.maximum=1;
     const double held=rear.step(r).value;
