@@ -86,6 +86,7 @@ class HotUpdateTest(unittest.TestCase):
         (path / 'webroot').mkdir()
         (path / 'module.prop').write_text('id=ios_auto_brightness\n')
         (path / 'skip_mount').touch()
+        (path / 'customize.sh').write_text('# installer only\n')
         for name in ('bridge.jar', 'webroot/index.html', 'SOURCE.txt', 'bin/ios_brightness_daemon'):
             (path / name).write_text(version)
         (path / 'bin/ios_brightness_daemon').chmod(0o755)
@@ -195,6 +196,8 @@ esac
         time.sleep(1.2)
         self.assertTrue((self.active / 'update').exists())
         (self.active / 'update').write_text('native marker')
+        (self.stage / 'customize.sh').unlink()  # real KSU post-customize cleanup
+        self.assertFalse((self.active / 'customize.sh').exists())
         # Reused PID must not be mistaken for the original installer.
         self.fake_process(123, 1, 999, ['unrelated'])
         self.wait_for(lambda: (self.state / 'update-status').read_text().strip() == 'ready')

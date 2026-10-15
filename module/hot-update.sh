@@ -37,7 +37,9 @@ hot_find_installer() {
 }
 hot_manifest() (
   cd "$1" || exit 1
-  find . -type f ! -path ./update ! -path ./disable ! -path ./remove ! -path ./.iab-install-token | sort |
+  # customize.sh is installer-only and is removed by the manager after return.
+  # Runtime files must still match exactly; do not ignore arbitrary deletions.
+  find . -type f ! -path ./customize.sh ! -path ./update ! -path ./disable ! -path ./remove ! -path ./.iab-install-token | sort |
     while IFS= read -r hot_file; do sha256sum "$hot_file" || exit 1; done
 )
 hot_matches() {
@@ -202,7 +204,7 @@ hot_prepare() {
   # Match the labels already assigned by the root manager to the staged module.
   chmod 755 "$HOT_TX/new" || return 1
   chcon -R --reference="$HOT_STAGED" "$HOT_TX/new" || return 1
-  rm -f "$HOT_TX/new/update" "$HOT_TX/new/.iab-install-token"
+  rm -f "$HOT_TX/new/update" "$HOT_TX/new/.iab-install-token" "$HOT_TX/new/customize.sh"
   hot_manifest "$HOT_TX/new" > "$HOT_TX/new.manifest" || return 1
   printf '%s\n' "$HOT_TOKEN" > "$HOT_STAGED/.iab-install-token" || return 1
   hot_matches "$HOT_STAGED" "$HOT_TX/new.manifest" || return 1
