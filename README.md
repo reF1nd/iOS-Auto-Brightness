@@ -29,7 +29,7 @@ Android 12（API 31）及以上，不限制品牌、ROM 或分辨率；ZIP 同�
 
 构建、自动测试及工作流检查统一由 [GitHub Actions](https://github.com/reF1nd/iOS-Auto-Brightness/actions) 执行。详见 [贡献约定](CONTRIBUTING.md)。
 
-CI 执行 C++ 算法与真实进程持久化测试、ASan/UBSan 检查、Java 事件策略测试、Android 四种 ABI / DEX 编译、ShellCheck、WebUI 联动测试、Android 12/15 模拟器观察模式运行及打包验证。所有任务通过后上传 `kernelsu-module` artifact，包含模块 ZIP 和 SHA-256。
+CI 执行 C++ 算法与真实进程持久化测试、ASan/UBSan 检查、Java 事件策略测试、Android 四种 ABI / DEX 编译、ShellCheck、Bash/BusyBox ash 安装事务回归、WebUI 联动测试、Android 12/15 模拟器观察模式运行及打包验证。所有任务通过后上传 `kernelsu-module` artifact，包含模块 ZIP 和 SHA-256。
 
 CI 无法替代真机亮度、传感器、温控和耗电验收；具体记录见 [验证记录](docs/VALIDATION.md)。
 
