@@ -162,15 +162,21 @@ Output Controller::step(const Frame& f) {
     for(const auto& previous:ambient_history_)if(std::isfinite(previous.back))rearBaseline=std::max(rearBaseline,previous.back);
     ambient_history_.push_back(f);
     if(ambient_history_.size()>256)ambient_history_.erase(ambient_history_.begin());
-    bool rearBright=std::isfinite(f.back)&&f.back>=0&&f.back>std::max(lux*4,20.0);
+    // Compare sensors even in dim rooms. The +1 regularizer avoids treating
+    // sub-lux noise or a covered rear sensor as strong contrary evidence; an
+    // absolute 20-lux gate previously discarded a stable 19-lux rear reading.
+    const bool rearValid=std::isfinite(f.back)&&f.back>=0&&f.back<=200000;
+    const bool rearBright=rearValid&&(f.back+1)/(lux+1)>2;
     if(guard_confirmed_&&lux>=smooth_*.8)guard_confirmed_=false;
-    if(!dark_pending_&&!guard_confirmed_&&smooth_>=1&&lux<smooth_*.65&&rearBright) {
+    if(!dark_pending_&&!guard_confirmed_&&smooth_>=1&&(lux+1)/(smooth_+1)<.65&&rearBright) {
         dark_pending_=true;dark_since_=-1;guard_front_=smooth_;guard_back_=rearBaseline;
     }
     if(dark_pending_) {
-        bool rearValid=std::isfinite(f.back)&&f.back>=0&&f.back<=200000;
         double frontRatio=(lux+1)/(guard_front_+1),rearRatio=(f.back+1)/(guard_back_+1);
-        bool corroborated=rearValid&&(!rearBright||(rearRatio<=.5&&rearRatio<=frontRatio*1.5));
+        // Crossing an absolute/contrast threshold is not proof of darkness.
+        // Require both sensors near darkness, or comparable relative declines
+        // from the pre-drop baselines, continuously for the confirmation period.
+        bool corroborated=rearValid&&((lux<=1&&f.back<=1)||(rearRatio<=.5&&rearRatio<=frontRatio*1.5));
         if(lux>=guard_front_*.8) {dark_pending_=false;dark_since_=-1;}
         else if(corroborated||!rearValid) {
             if(dark_since_<0||guard_missing_!=!rearValid)dark_since_=f.now;

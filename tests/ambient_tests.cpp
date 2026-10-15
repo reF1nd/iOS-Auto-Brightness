@@ -54,5 +54,35 @@ int main(){try {
     c=controller();f=initial();f.back=0;c.step(f);run(c,f,40);previous=f.current;
     f.lux=1;f.now+=8000;o=c.step(f);
     check(o.value+1e-12>=previous*std::pow(.8,.25),"idle interval cannot spend a new dim ramp in advance");
+    // Replay 18:54: front 8.825 -> 0 for ten seconds, rear unchanged at 19.
+    // Include the old gate boundary and smaller positive rear measurements.
+    for(double rear: {2.0, 4.0, 19.0, 20.0, 21.0}) {
+        c=controller();f=initial();f.lux=8.825;f.back=rear;c.step(f);run(c,f,40);
+        const double held=f.current;
+        f.lux=0;o=run(c,f,40);
+        check(c.ambientGuard()&&o.value==held&&!c.fastDark(),"dim-room front dropout must not dim with stable rear");
+        check(!c.learn(0,.01,10000),"dim-room dropout must not create a learning point");
+        f.lux=8.825;run(c,f,1);check(!c.ambientGuard(),"dim-room front recovery releases guard");
+        f.lux=0;run(c,f,8);f.back=0;
+        run(c,f,4);check(c.ambientGuard(),"brief dual darkness needs confirmation");
+        run(c,f,6);check(!c.ambientGuard(),"sustained dual darkness releases low-lux guard");
+        run(c,f,100);check(f.current<held,"confirmed dim room still adapts downward");
+    }
+    c=controller();f=initial();f.lux=8.825;f.back=19;c.step(f);run(c,f,40);
+    const double held=f.current;f.lux=0;run(c,f,12);
+    f.back=18;run(c,f,40);check(c.ambientGuard()&&f.current==held,"small rear variation is not corroboration");
+    f.lux=3;f.back=5;run(c,f,10);check(!c.ambientGuard(),"relative dual decline confirms darkness below 20 lux");
+
+    c=controller();f=initial();f.lux=8.825;f.back=19;c.step(f);run(c,f,40);f.lux=0;run(c,f,12);
+    f.maximum=.003;o=run(c,f,1);check(o.apply&&o.value<=.003,"low-lux guard cannot override system cap");
+    f.blocked=true;o=run(c,f,1);check(!o.apply,"thermal/system protection must release control during low-lux guard");
+    f.blocked=false;f.back=-1;run(c,f,19);check(c.ambientGuard(),"low-lux rear loss retains grace period");
+    run(c,f,3);check(!c.ambientGuard(),"low-lux rear loss eventually permits front-only control");
+
+    for(double rear: {0.0, .2, 1.0}) {
+        c=controller();f=initial();f.back=rear;c.step(f);run(c,f,40);const double start=f.current;
+        f.lux=0;run(c,f,100);
+        check(!c.ambientGuard()&&f.current<start,"covered/noise-level rear cannot freeze normal dimming");
+    }
     std::cout<<"Orientation guard, corroborated darkness, learning exclusion and downward slew passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
