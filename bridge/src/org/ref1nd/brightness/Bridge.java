@@ -138,9 +138,11 @@ public final class Bridge implements SensorEventListener {
         Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
         PowerManager pm=(PowerManager)context.getSystemService(Context.POWER_SERVICE);
         boolean safe=pm.getCurrentThermalStatus()==0&&hasField(info,"brightnessMaxReason")&&integer(info,"brightnessMaxReason")==0;
+        boolean manual=false;
+        try{manual=mode(activeUser())==0;}catch(Exception ignored){} // Unknown mode cannot authorize raising brightness.
         DirectBacklight.restore(BACKLIGHT_ROOT,new File(state,"direct-output.properties"),
             (String)call(main,"getUniqueId",new Class<?>[]{}),read(new File("/proc/sys/kernel/random/boot_id"),128).trim(),
-            main.getState()==Display.STATE_ON&&pm.isInteractive(),safe&&Settings.System.getInt(context.getContentResolver(),Settings.System.SCREEN_BRIGHTNESS_MODE,1)==0,
+            main.getState()==Display.STATE_ON&&pm.isInteractive(),safe&&manual,
             number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness"),number(info,"brightnessMaximum"),()->standalonePanelRead(module));
     }
     static long standalonePanelRead(File module) throws IOException {
@@ -552,12 +554,12 @@ public final class Bridge implements SensorEventListener {
         if(changed)wake();
     }
     @Override public void onAccuracyChanged(Sensor s,int accuracy) {}
-    int activeUser() throws Exception {return (Integer)Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);}
+    static int activeUser() throws Exception {return (Integer)Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);}
     long serial(int id) throws Exception {
         UserHandle handle=(UserHandle)UserHandle.class.getMethod("of",int.class).invoke(null,id);
         return ((UserManager)context.getSystemService(Context.USER_SERVICE)).getSerialNumberForUser(handle);
     }
-    String systemSetting(int uid,String key) throws Exception {
+    static String systemSetting(int uid,String key) throws Exception {
         // app_process is not an AMS-registered application. Use the external
         // provider API for privileged clients; never parse settings XML/ABX.
         Object am=Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null);
@@ -572,7 +574,7 @@ public final class Bridge implements SensorEventListener {
             return values==null?null:values.getString("value");
         }finally{call(am,"removeContentProviderExternalAsUser",new Class<?>[]{String.class,IBinder.class,int.class},"settings",token,0);}
     }
-    int mode(int uid) throws Exception {
+    static int mode(int uid) throws Exception {
         String value=systemSetting(uid,Settings.System.SCREEN_BRIGHTNESS_MODE);
         return value==null?-1:Integer.parseInt(value);
     }

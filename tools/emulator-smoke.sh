@@ -30,6 +30,9 @@ adb push module/. /data/local/tmp/iab-module/ >/dev/null
 adb push build/artifacts/core/ios_brightness_daemon /data/local/tmp/iab-module/bin/ >/dev/null
 adb push build/artifacts/bridge/bridge.jar /data/local/tmp/iab-module/ >/dev/null
 adb shell 'chmod 755 /data/local/tmp/iab-module/bin/ios_brightness_daemon; cp /data/local/tmp/iab-module/default.conf /data/local/tmp/iab-state/config.conf; settings put system screen_brightness_mode 1; settings put system screen_off_timeout 600000; input keyevent KEYCODE_WAKEUP'
+# Exercise startup/exit recovery even in observation CI: app_process is not an
+# AMS-registered app and must use the external settings provider API.
+adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar app_process /system/bin org.ref1nd.brightness.Bridge release'
 adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar nohup setsid app_process /system/bin org.ref1nd.brightness.Bridge /data/local/tmp/iab-module /data/local/tmp/iab-state --observe > /data/local/tmp/iab-state/bridge.log 2>&1 < /dev/null & sleep 2'
 for _ in $(seq 1 15); do
   if adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-status.json 2>/dev/null; then break; fi
