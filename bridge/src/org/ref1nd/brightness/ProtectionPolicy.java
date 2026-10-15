@@ -28,8 +28,11 @@ public final class ProtectionPolicy {
     public static boolean clearedTemporary(String dump) {
         String[] sections=dump.split("(?m)^Display Power Controller:\\s*$");
         String main=null;
-        for(String s:sections)if(Pattern.compile("(?m)^\\s*mDisplayId=0\\s*$").matcher(s).find()) {
+        for(int i=1;i<sections.length;i++) {
+            String s=sections[i];
+            if(Pattern.compile("(?m)^\\s*mDisplayId=0\\s*$").matcher(s).find()) {
             if(main!=null)return false;main=s;
+            }
         }
         if(main==null)return false;
         return Pattern.compile("(?m)^\\s*mBrightnessReason=automatic\\s*$").matcher(main).find()
