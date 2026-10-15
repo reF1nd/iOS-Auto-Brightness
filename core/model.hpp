@@ -70,7 +70,7 @@ private:
     int64_t dark_since_=-1;
     double guard_front_=0, guard_back_=0, front_baseline_=-1;
     int64_t near_since_=-1, far_since_=-1;
-    bool proximity_released_=false;
+    bool proximity_confirmed_=false;
     std::vector<Frame> ambient_history_;
     int high_confirm_=0;
     int64_t high_exit_at_=-1, last_high_confirm_=-1;

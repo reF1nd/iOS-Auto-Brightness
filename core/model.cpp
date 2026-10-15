@@ -128,14 +128,14 @@ double Controller::nightScale() const {
 void Controller::reset() {
     frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;dark_pending_=false;dark_since_=-1;
-    near_since_=-1;far_since_=-1;proximity_released_=false;front_baseline_=-1;
+    near_since_=-1;far_since_=-1;proximity_confirmed_=false;front_baseline_=-1;
     guard_front_=0;guard_back_=0;guard_confirmed_=false;guard_missing_=false;ambient_history_.clear();
     high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;alpha_=0;desired_=0;
     sunlight_target_=0;ramp_from_=0;ramp_target_=-1;ramp_at_=0;ramp_duration_=0;fast_until_=0;
 }
 void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
 bool Controller::learn(double lux,double value,int64_t time) {
-    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_released_||dark_pending_||smooth_<0||frame_.lux<0) return false;
+    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
     learning.add(lux,value,time);hold(frame_.now);return true;
@@ -158,21 +158,26 @@ Output Controller::step(const Frame& f) {
     if(f.near) {
         far_since_=-1;
         if(near_since_<0||f.now<near_since_)near_since_=f.now;
-        if(f.now-near_since_>=600)proximity_released_=true;
+        if(f.now-near_since_>=600)proximity_confirmed_=true;
         last_=f.now;
-        if(proximity_released_)return release("proximity");
-        if(output_<0||f.now<hold_until_)return release("proximity_pending");
+        if(output_<0||f.now<hold_until_)return release(proximity_confirmed_?"proximity_hold":"proximity_pending");
         const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
             std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
         output_=std::clamp(output_,f.minimum,cap);desired_=output_;
         ramp_duration_=0;ramp_target_=-1;
-        return {true,output_,"proximity_pending"};
+        return {true,output_,proximity_confirmed_?"proximity_hold":"proximity_pending"};
     }
     near_since_=-1;
-    if(proximity_released_) {
+    if(proximity_confirmed_) {
         if(far_since_<0||f.now<far_since_)far_since_=f.now;
-        if(f.now-far_since_<300)return release("proximity_recovery");
-        proximity_released_=false;far_since_=-1;
+        if(f.now-far_since_<300) {
+            if(output_<0||f.now<hold_until_)return release("proximity_recovery");
+            const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
+                std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
+            output_=std::clamp(output_,f.minimum,cap);desired_=output_;last_=f.now;
+            return {true,output_,"proximity_recovery"};
+        }
+        proximity_confirmed_=false;far_since_=-1;
     }
     double lux=f.lux;
     const bool dual=std::isfinite(f.front)&&f.front>=0&&f.front<=200000;

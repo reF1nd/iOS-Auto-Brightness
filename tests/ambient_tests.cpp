@@ -97,12 +97,13 @@ int main(){try {
     }
     f.near=true;f.now+=50;c.step(f);f.maximum=.0005;f.now+=100;o=c.step(f);
     check(o.apply&&o.value<=.0005,"lower system cap applies during proximity debounce");
-    f.blocked=true;f.now+=100;o=c.step(f);check(!o.apply,"thermal/system override is immediate during debounce");
-    f.blocked=false;f.now+=500;o=c.step(f);check(!o.apply&&o.reason=="proximity","sustained obstruction releases");
-    f.near=false;f.now+=50;o=c.step(f);check(!o.apply&&o.reason=="proximity_recovery","confirmed obstruction requires stable far");
+    f.now+=500;o=c.step(f);check(o.apply&&o.reason=="proximity_hold"&&o.value<=.0005,"sustained obstruction holds instead of handing off");
+    run(c,f,120);check(f.current<=.0005,"long obstruction keeps output within system cap");
+    f.near=false;f.now+=50;o=c.step(f);check(o.apply&&o.reason=="proximity_recovery"&&o.value<=.0005,"stable far confirmation retains the held output");
     check(!c.learn(f.lux,.0004,300001),"recovery cannot teach");
     f.now+=300;o=c.step(f);check(o.apply&&o.value<=f.maximum,"far recovery respects cap");
-    f.screen=false;f.near=true;f.now+=50;check(!c.step(f).apply,"screen off immediately releases");
+    f.near=true;f.blocked=true;f.now+=50;check(!c.step(f).apply,"system protection immediately releases while obstructed");
+    f.blocked=false;f.screen=false;f.near=true;f.now+=50;check(!c.step(f).apply,"screen off immediately releases");
 
     // Wake already in front-dark/rear-bright conditions: the fused input is
     // the control and learning coordinate, not a spurious front-drop guard.
