@@ -1,6 +1,6 @@
 # 重构计划
 
-状态：设计阶段，核心尚未实现。首要目标：小米 17 Pro Max / Android 17 / HyperOS 4 / KernelSU。
+状态：实现已落地，正在完成真机验收；当前实现及限制见 README、DEVICE 和 VALIDATION。以下保留设计依据与验收要求。首要目标：小米 17 Pro Max / Android 17 / HyperOS 4 / KernelSU。
 
 ## 1. 设备基线与功能清单
 

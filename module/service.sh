@@ -1,5 +1,11 @@
 #!/system/bin/sh
 # SPDX-License-Identifier: GPL-3.0-only
+# Android mksh closes high file descriptors across exec, breaking flock(9).
+# KernelSU ships BusyBox ash; also use it when this script is started via adb sh.
+if [ "${IAB_SHELL_READY:-}" != "$$" ]; then
+  export IAB_SHELL_READY=$$ ASH_STANDALONE=1
+  exec /data/adb/ksu/bin/busybox sh "$0" "$@"
+fi
 MODDIR=${0%/*}
 STATE=/data/adb/ios_auto_brightness
 [ ! -L "$STATE" ] || exit 1

@@ -8,14 +8,15 @@
 
 ## 核心构建接口
 
-源码实现时使用以下 CI 接口：
+目前使用以下 CI 接口：
 
 - 根目录提供 `CMakeLists.txt`。
 - `BUILD_TESTING=ON` 在 Linux 上构建可独立运行的算法、存储及状态机测试，并注册到 CTest；设备接口使用可替换实现。
 - `BUILD_TESTING=OFF` 支持 Android NDK `arm64-v8a` 构建。
 - Android 可执行文件目标命名为 `ios_brightness_daemon`，遵循 `CMAKE_RUNTIME_OUTPUT_DIRECTORY`。
-- CI 固定 NDK `27.2.12479018`，使用 API 26 作为原生核心的编译下限，并启用灵活页大小支持；这不代表已支持所有 Android 8.0 及以上系统。HyperOS 4 桥接所需的 SDK/API 将在设备适配后单独确定。
-- 暂不提供空核心、虚假测试或旧版闭源二进制来通过 CI。初始化阶段核心任务应显示 skipped。
+- CI 固定 NDK `27.2.12479018`，使用 API 26 作为原生核心的编译下限，并启用灵活页大小支持；这不代表已支持所有 Android 8.0 及以上系统。Java 桥接使用 SDK 35 编译，安装和运行期接口面向 Android 17 / HyperOS 4。
+- 模块打包等待核心测试、Android 构建及桥接测试全部成功，不引入旧版闭源二进制。
+- ADB 真机调试使用 Actions 产物，单独记录观察模式、主动控制和重启验证结果。
 
 Actions 是自动验证的执行位置。只有对应提交的工作流真实成功后，才能记录为通过；区分工作流检查、核心测试、Android 编译和真机验证。
 
