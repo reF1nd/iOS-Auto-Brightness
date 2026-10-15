@@ -85,15 +85,23 @@ hot_preflight() {
   hot_flags && return 1
   [ ! -e "$HOT_STATE/stop" ] && hot_health
 }
+hot_lock_service() {
+  # Root-manager BusyBox flock has no util-linux -w option.
+  hot_lock_ticks=0
+  until flock -n "$1"; do
+    [ "$hot_lock_ticks" -lt 15 ] || return 1
+    sleep 1; hot_lock_ticks=$((hot_lock_ticks + 1))
+  done
+}
 hot_stop() {
   # The socket asks the bridge to run its shutdown hook. The supervisor also
   # observes stop. Locks prove BOTH supervisor cleanup and native exit completed.
   touch "$HOT_STATE/stop" || return 1
   timeout 8 sh "$HOT_ACTIVE/control.sh" stop || :
   exec 9>"$HOT_STATE/supervisor.lock"
-  flock -w 15 9 || return 1
+  hot_lock_service 9 || return 1
   exec 7>"$HOT_STATE/core.lock"
-  flock -w 15 7 || return 1
+  hot_lock_service 7 || return 1
 }
 hot_unlock_service() { exec 7>&- 9>&-; }
 hot_start() {

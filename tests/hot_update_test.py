@@ -14,6 +14,8 @@ import time
 import unittest
 
 SOURCE = Path('module/hot-update.sh').read_text()
+BUSYBOX = os.environ.get('HOT_TEST_BUSYBOX')
+SHELL = [BUSYBOX, 'sh'] if BUSYBOX else ['bash']
 
 
 class HotUpdateTest(unittest.TestCase):
@@ -36,7 +38,8 @@ class HotUpdateTest(unittest.TestCase):
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.bb = self.bin / 'busybox'
-        self.bb.write_text('#!/bin/bash\nexport IAB_UPDATE_SHELL_READY=$$\nshift\nexec bash "$@"\n')
+        self.bb.write_text('#!/bin/sh\nexport IAB_UPDATE_SHELL_READY=$$\n' +
+                           (f'exec {shlex.quote(BUSYBOX)} "$@"\n' if BUSYBOX else 'shift\nexec bash "$@"\n'))
         self.bb.chmod(0o755)
         getprop = self.bin / 'getprop'
         getprop.write_text('#!/bin/sh\necho 1\n')
@@ -72,7 +75,7 @@ class HotUpdateTest(unittest.TestCase):
         (path / 'cmdline').write_bytes(b'\0'.join(arg.encode() for arg in argv) + b'\0')
 
     def shell(self, body, check=True):
-        return subprocess.run(['bash', '-c', '. "$1" --library; ' + body, 'fixture', str(self.script)],
+        return subprocess.run(SHELL + ['-c', '. "$1" --library; ' + body, 'fixture', str(self.script)],
                               env=self.env, capture_output=True, text=True, check=check, timeout=15)
 
     def tree(self, path, version):
@@ -120,8 +123,8 @@ esac
         self.wait_for(lambda: (self.state / 'running').exists())
 
     def prepare(self):
-        result = subprocess.run(['bash', '-c', 'export IAB_UPDATE_SHELL_READY=$$; exec bash "$@"',
-                                 'fixture', str(self.script), 'prepare', str(self.stage), '124', '123', '/fixture.zip', 'true'],
+        result = subprocess.run(['bash', '-c', 'export IAB_UPDATE_SHELL_READY=$$; exec "$@"',
+                                 'fixture'] + SHELL + [str(self.script), 'prepare', str(self.stage), '124', '123', '/fixture.zip', 'true'],
                                 env=self.env, capture_output=True, text=True, timeout=70)
         return result
 

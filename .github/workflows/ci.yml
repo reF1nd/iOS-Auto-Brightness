@@ -52,6 +52,13 @@ jobs:
           printf '%s  %s\n' "$ACTIONLINT_SHA256" "$tool_dir/$archive" | sha256sum --check
           tar -xzf "$tool_dir/$archive" -C "$tool_dir" actionlint
           "$tool_dir/actionlint" -color
+      - name: Check installer scripts and transactions
+        run: |
+          shellcheck --severity=warning module/*.sh
+          sudo apt-get update -qq
+          sudo apt-get install --yes busybox
+          python3 tests/hot_update_test.py
+          HOT_TEST_BUSYBOX=/usr/bin/busybox python3 tests/hot_update_test.py
       - name: Detect core implementation
         id: core
         run: |
@@ -222,7 +229,6 @@ jobs:
           node --check module/webroot/app.js
           node --test tests/webui_test.mjs
           python3 tests/log_tools_test.py
-          python3 tests/hot_update_test.py
       - name: Package and validate archive
         run: python3 tools/package.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
