@@ -69,14 +69,14 @@ int main(int argc,char**argv) {
                 if(cmd=="PANEL_READ") {end();std::cout<<readMainPanel()<<std::endl;continue;}
                 if(cmd=="POLICY") {
                     std::string policy;in>>policy;end();
-                    if(policy!="v68"||hasUser)throw std::runtime_error("policy must precede user");
+                    if(policy!="v68"||hasUser||core.reference)throw std::runtime_error("policy must precede user and be set once");
                     core.reference=true;core.profile.id+="-v68curve2";store.profile=core.profile.id;core.reset();
                 } else if(cmd=="SLIDER") {
                     int value;int64_t wall;if(!(in>>value>>wall)||!hasUser)throw std::runtime_error("invalid slider");end();
-                    auto previous=core.learning;
+                    auto previous=core;
                     if(core.slider(value,wall)) {
                         try{store.save(core.learning);saveStatus="saved_reference_curve";}
-                        catch(...){core.learning=previous;throw;}
+                        catch(...){core=previous;throw;}
                     }
                 } else if(cmd=="USER") {
                     int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");end();

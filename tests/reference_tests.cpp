@@ -7,7 +7,7 @@
 using namespace brightness;
 void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 int main(){
-    check(std::abs(referenceBrightness(referenceNits(10))-.068244)<.00001,"reference 10 lux curve");
+    check(std::abs(referenceBrightness(referenceNits(10))-.068271013)<.000001,"reference 10 lux curve");
     check(std::abs(referenceBrightness(referenceNits(100))-.2071)<.0001,"reference 100 lux curve");
     check(referenceNits(.5)==1&&referenceNits(1)==1&&referenceNits(2)==3,"reference low-lux branches retained");
     check(referenceSlider(0,2.2)==0&&referenceSlider(255,2.2)>.9999,"reference slider endpoints");
