@@ -55,6 +55,7 @@ public final class Bridge implements SensorEventListener {
     final float[] profileNits, profileBacklight;
     final String displayId;
     final String version;
+    final String sourceCommit;
     final boolean calibrated;
     final EventCapability eventCapability;
     final SettingsLearning settingsLearning=new SettingsLearning();
@@ -143,6 +144,7 @@ public final class Bridge implements SensorEventListener {
         context=c;module=mod;state=dir;observe=observation;
         bootId=read(new File("/proc/sys/kernel/random/boot_id"),128).trim();
         version=read(new File(module,"module.prop"),4096).replaceAll("(?s).*?\\nversion=([^\\n]+).*", "$1");
+        sourceCommit=Health.sourceCommit(module);
         if(!dir.isDirectory())throw new IOException("state directory not prepared");
         display=(DisplayManager)c.getSystemService(Context.DISPLAY_SERVICE);
         global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
@@ -600,7 +602,7 @@ public final class Bridge implements SensorEventListener {
                 .put("back_sample_age_ms",backReading.age(now)).put("back_registered",backReading.isRegistered())
                 .put("back_reporting_mode",back==null?-1:back.getReportingMode())
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
-                .put("slider",systemSetting(user,Settings.System.SCREEN_BRIGHTNESS)).put("version",version).put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*(android.os.Process.getElapsedCpuTime()-cpuStarted)/Math.max(1,now-started));
+                .put("slider",systemSetting(user,Settings.System.SCREEN_BRIGHTNESS)).put("version",version).put("source_commit",sourceCommit).put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*(android.os.Process.getElapsedCpuTime()-cpuStarted)/Math.max(1,now-started));
             String reason=result.optString("reason");
             float target=(float)result.optDouble("target",-1);
             boolean significant=lastLoggedTarget<0||Math.abs(target-lastLoggedTarget)>Math.max(.0005f,Math.abs(lastLoggedTarget)*.08f);
@@ -685,6 +687,7 @@ public final class Bridge implements SensorEventListener {
             }return;
         }
         if(args.length==3&&args[0].equals("health")){System.out.println(Health.report(new File(args[1]),new File(args[2])));return;}
+        if(args.length==3&&args[0].equals("upgrade-ready")){System.out.println(Health.upgradeReady(new File(args[1]),new File(args[2])));return;}
         if(args.length==1&&args[0].equals("backlight")) {
             org.json.JSONArray rows=new org.json.JSONArray();
             for(Backlight.Row row:Backlight.read(new File("/sys/class/backlight")))rows.put(new JSONObject().put("path",row.path).put("requested",row.requested).put("actual",row.actual).put("maximum",row.maximum));

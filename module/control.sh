@@ -26,6 +26,7 @@ case "$1" in
     i=1; while [ "$i" -le 8 ]; do rm -f "$STATE/service.log.$i" || exit 1; i=$((i + 1)); done
     echo '{"ok":true}'; exit 0 ;;
   backlight) exec /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge backlight ;;
+  upgrade-ready) exec /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge upgrade-ready "$STATE" "$MODDIR" ;;
   health) exec /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge health "$STATE" "$MODDIR" ;;
   sensors-get) exec /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge sensors-get "$STATE" ;;
   sensors-save) exec /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge sensors-save "$STATE" "$2" ;;

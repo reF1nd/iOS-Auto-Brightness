@@ -16,7 +16,8 @@ public final class Health {
     static long processStart(long pid) {
         try {
             String stat=Bridge.read(new File("/proc/"+pid+"/stat"),8192);
-            return Long.parseLong(stat.substring(stat.lastIndexOf(')')+2).split(" +")[19]);
+            String[] fields=stat.substring(stat.lastIndexOf(')')+2).split(" +");
+            return fields[0].equals("Z")?-1:Long.parseLong(fields[19]);
         }catch(Exception e){return -1;}
     }
     static String checkedProcess(JSONObject s,String key,String token) {
@@ -28,6 +29,25 @@ public final class Health {
         if(!sameBoot)return "previous_boot";
         if(heartbeat<0||heartbeat>now)return "invalid_clock";
         return now-heartbeat>20000?"stale":"fresh";
+    }
+    static String sourceCommit(File module) {
+        try {
+            for(String line:Bridge.read(new File(module,"SOURCE.txt"),4096).split("\n"))
+                if(line.matches("Commit: [0-9a-f]{40}"))return line.substring(8);
+        }catch(Exception ignored){}
+        return "unknown";
+    }
+    public static JSONObject upgradeReady(File state,File module) throws Exception {
+        JSONObject health=report(state,module),out=new JSONObject().put("ready",false);
+        try {
+            JSONObject snapshot=new JSONObject(Bridge.read(new File(state,"status.json"),131072));
+            String expected=sourceCommit(module);
+            // Compare with the identity captured at startup, never a file reread by
+            // the running bridge after installation replaced its path.
+            boolean ready=health.optString("health").equals("healthy")&&!expected.equals("unknown")
+                &&expected.equals(snapshot.optString("source_commit"));
+            return out.put("ready",ready).put("heartbeat_ms",snapshot.optLong("heartbeat_ms",-1));
+        }catch(Exception ignored){return out;}
     }
     public static JSONObject report(File state,File module) throws Exception {
         JSONObject out=new JSONObject().put("ok",true);long supervisor=-1;

@@ -38,6 +38,13 @@ while [ "$(getprop sys.boot_completed)" != 1 ]; do
   [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || exit 0
   sleep 2
 done
+boot_id=$(cat /proc/sys/kernel/random/boot_id) || exit 1
+[ -n "$boot_id" ] || exit 1
+if [ "$(cat "$STATE/first-install-boot" 2>/dev/null)" = "$boot_id" ]; then
+  echo 'First install is awaiting reboot; refusing premature service activation' >> "$LOG"
+  exit 0
+fi
+printf '%s\n' "$boot_id" > "$STATE/activated-boot"
 for id in autobrightness LiveDisplay lux-brightness adaptive-brightness brightness-controller dimmer cf.lumen twilight; do
   other="/data/adb/modules/$id"
   if [ -d "$other" ] && [ ! -f "$other/disable" ] && [ ! -f "$other/remove" ]; then
