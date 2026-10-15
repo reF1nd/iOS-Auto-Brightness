@@ -67,6 +67,7 @@ public final class Bridge implements SensorEventListener {
     long sensorSession=0, lastSensorRetry=0, lastFallbackRequest=-10000;
     volatile long heartbeat=SystemClock.elapsedRealtime(), nextTickAt=0;
     int pollMs=250;
+    boolean wakeQueued=false;
     String luxSource="unavailable", fallbackStatus="idle";
     boolean near=false, registered=false, overridden=false, eligible=false;
     int user=-1;
@@ -218,7 +219,11 @@ public final class Bridge implements SensorEventListener {
     void wake() {
         if(closing.get())return;
         // All calls are delivered on the main handler, including sensor events.
-        cadence.reset();handler.removeCallbacks(tickTask);handler.postDelayed(tickTask,50);
+        cadence.reset();
+        if(!wakeQueued) {
+            wakeQueued=true;nextTickAt=SystemClock.elapsedRealtime()+50;
+            handler.removeCallbacks(tickTask);handler.postDelayed(tickTask,50);
+        }
     }
     void registerLight(Sensor sensor,LightReading reading,int period) {
         if(sensor!=null)sensors.unregisterListener(this,sensor);
@@ -366,7 +371,7 @@ public final class Bridge implements SensorEventListener {
     static String rootCause(Throwable e){while(e.getCause()!=null)e=e.getCause();return e.toString();}
     void tick() {
         if(closing.get())return;
-        long now=SystemClock.elapsedRealtime();heartbeat=now;
+        long now=SystemClock.elapsedRealtime();heartbeat=now;nextTickAt=now;wakeQueued=false;
         try {
             int currentUser=activeUser();long currentSerial=serial(currentUser);
             if(currentSerial<0)throw new IOException("user serial unavailable");
