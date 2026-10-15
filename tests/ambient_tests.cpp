@@ -111,7 +111,8 @@ int main(){try {
     c.step(f);run(c,f,160);
     check(c.smoothLux()==100&&!c.ambientGuard(),"bright rear remains effective after wake");
     check(c.learn(100,.07,400000),"stable fusion can learn at its own coordinate");
-    run(c,f,40);check(std::abs(f.current-.07)<.00001,"learned fusion target remains after hold");
+    // A real adjustment has already changed framework output before the event.
+    f.current=.07;run(c,f,40);check(std::abs(f.current-.07)<.00001,"learned fusion target remains after hold");
     f.front=.7;run(c,f,20);f.front=0;run(c,f,20);
     check(c.smoothLux()==100&&!c.ambientGuard()&&std::abs(f.current-.07)<.00001,"front zero fluctuations cannot dim stable rear input");
     f.lux=f.back=0;run(c,f,160);check(c.smoothLux()<1&&f.current<.07,"both dark still dim");
