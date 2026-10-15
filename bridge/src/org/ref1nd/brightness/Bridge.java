@@ -55,7 +55,9 @@ public final class Bridge implements SensorEventListener {
     final float[] profileNits, profileBacklight;
     final String displayId;
     final String version;
-    final boolean calibrated, learningAvailable;
+    final boolean calibrated;
+    final EventCapability eventCapability;
+    final SettingsLearning settingsLearning=new SettingsLearning();
     String calibrationStatus;
     final ProtectionPolicy protection=new ProtectionPolicy();
     String protectionReason="", learningSource="", learningScope="", sensorConfigText="", sensorSelectionStatus="auto";
@@ -152,8 +154,8 @@ public final class Bridge implements SensorEventListener {
         try{display.getClass().getMethod("getBrightnessEvents");}catch(NoSuchMethodException e){events=false;}
         PanelProfile profile;
         try{profile=PanelProfile.fromDump(displayDump(),displayId);calibrationStatus="system_calibration";}
-        catch(Exception e){profile=PanelProfile.generic(displayId);calibrationStatus="generic_no_nits_learning: "+rootCause(e);}
-        calibrated=profile.calibrated;learningAvailable=events&&calibrated;
+        catch(Exception e){profile=PanelProfile.generic(displayId);calibrationStatus="generic_normalized_learning: "+rootCause(e);}
+        calibrated=profile.calibrated;eventCapability=new EventCapability(events);
         profileNits=profile.nits;profileBacklight=profile.brightness;
         String profileName=profile.id;
         // Preserve existing learning only when the complete measured mapping is identical.
@@ -207,7 +209,7 @@ public final class Bridge implements SensorEventListener {
         }
         if(selected!=null&&selected==rear)throw new IOException("front and rear cannot be the same sensor");
         registerSensors(false);front=selected;back=rear;proximity=sensors.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-        sensorChoice=choice;sensorConfigText=text;learningSource="";pending=null;manual.cancel();
+        sensorChoice=choice;sensorConfigText=text;learningSource="";pending=null;manual.cancel();settingsLearning.reset();
     }
     String sourceScope(String source) throws Exception {
         if(source.equals("front")&&front==sensors.getDefaultSensor(Sensor.TYPE_LIGHT))return "default";
@@ -227,11 +229,11 @@ public final class Bridge implements SensorEventListener {
         },"iab-output-check").start();
     }
     void manualLearning(long now,float value) throws Exception {
-        // Some app_process hosts receive no ContentObserver callbacks. Only an
-        // explicit user-armed window may interpret a current-user settings delta.
+        // Settings polling is allowed only by explicit per-adjustment intent or
+        // the opt-in compatibility mode. Framework events supply their own intent.
         String slider=systemSetting(user,Settings.System.SCREEN_BRIGHTNESS);
         String adjustment=systemSetting(user,"screen_auto_brightness_adj");
-        boolean changed=manual.settingChanged(manualSlider,slider)||manual.settingChanged(manualAdjustment,adjustment);
+        boolean changed=!manual.origin.equals("event")&&(manual.settingChanged(manualSlider,slider)||manual.settingChanged(manualAdjustment,adjustment));
         manualSlider=slider;manualAdjustment=adjustment;
         if(changed&&eligible&&protectionReason.isEmpty()) {
             long wall=System.currentTimeMillis();manual.change(now,wall,learningLux.atEvent(wall,now,wall));
@@ -242,9 +244,23 @@ public final class Bridge implements SensorEventListener {
         if(!ready)return;
         if(learningLux.stillStable(manual.wall,manual.lux,now,System.currentTimeMillis())) {
             JSONObject saved=request("EVENT "+manual.wall+" "+manual.lux+" "+manual.value);
-            eventStatus=saved.has("accepted")?"rejected_unstable":"saved_manual";
+            eventStatus=saved.has("accepted")?"rejected_unstable":"saved_"+manual.origin;
         }else eventStatus="manual_discarded_lux_changed";
         manual.cancel();lastEvent=System.currentTimeMillis();
+    }
+    void settingsLearning(long now,float current) throws Exception {
+        boolean allowed=result.optBoolean("settings_learning")&&result.optBoolean("learning_enabled")&&
+            eligible&&protectionReason.isEmpty()&&pending==null&&result.optBoolean("enabled");
+        if(!allowed){settingsLearning.reset();return;}
+        String slider=systemSetting(user,Settings.System.SCREEN_BRIGHTNESS);
+        String adjustment=systemSetting(user,"screen_auto_brightness_adj");
+        if(settingsLearning.observe(now,allowed,slider,adjustment)) {
+            long wall=System.currentTimeMillis();
+            manualSlider=slider;manualAdjustment=adjustment;
+            manual.begin(now,wall,learningLux.atEvent(wall,now,wall),"settings");
+            changedAt=now;request("HOLD "+now);clearOverride();
+            manualLearning(now,current);settingsLearning.reset();
+        }
     }
     String displayDump() throws Exception {return serviceDump("display");}
     String serviceDump(String service) throws Exception {
@@ -302,7 +318,7 @@ public final class Bridge implements SensorEventListener {
                 int temp=i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,-1);batteryTemperature=temp>=0?temp/10f:-1;
             }
             if(Intent.ACTION_TIMEZONE_CHANGED.equals(i.getAction()))TimeZone.setDefault(null);
-            if(Intent.ACTION_TIME_CHANGED.equals(i.getAction())){learningLux.reset();pending=null;manual.cancel();lastEvent=System.currentTimeMillis();}
+            if(Intent.ACTION_TIME_CHANGED.equals(i.getAction())){learningLux.reset();pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();}
             wake();
         }},filter);}
         catch(Exception e){System.err.println("broadcast listener unavailable: "+rootCause(e));}
@@ -448,7 +464,7 @@ public final class Bridge implements SensorEventListener {
     }
     void events(long now,boolean canLearn) {
         try {
-            if(!learningAvailable){if(!eventStatus.startsWith("saved"))eventStatus="manual_learning_available";return;}
+            if(!eventCapability.probe(now)){if(!eventStatus.startsWith("saved"))eventStatus="manual_learning_available";return;}
             List<?> list=(List<?>)call(display,"getBrightnessEvents",new Class<?>[]{});
             long since=lastEvent,max=lastEvent;Object newest=null;float chosenLux=-1;
             long eventNow=SystemClock.elapsedRealtime(), wallNow=System.currentTimeMillis();
@@ -464,10 +480,18 @@ public final class Bridge implements SensorEventListener {
                     if(newest==null||ts>time(newest,"timeStamp")){newest=e;chosenLux=direct;}
                 }else {dropped++;lastEventRejection=rejection;}
             }
-            lastEvent=max;
+            eventCapability.success();lastEvent=max;
             if(newest!=null) {
+                manual.cancel();settingsLearning.reset();
                 float[] lux=(float[])newest.getClass().getField("luxValues").get(newest);
                 lastFrameworkLux=lux[lux.length-1];lastLearningLux=chosenLux;
+                if(!calibrated) {
+                    // The event proves intent; stable normalized output supplies the
+                    // value without pretending the generic nits curve is calibration.
+                    if(wallNow-time(newest,"timeStamp")>3000){eventStatus="discarded_delayed_uncalibrated_event";return;}
+                    manual.begin(now,time(newest,"timeStamp"),chosenLux,"event");
+                    changedAt=now;request("HOLD "+now);clearOverride();eventStatus=manual.status;return;
+                }
                 pending=new JSONObject().put("time",time(newest,"timeStamp")).put("lux",chosenLux).put("value",toBacklight(number(newest,"brightness")));
                 pendingAt=now;eventStatus="pending";request("HOLD "+now);clearOverride();
             }
@@ -480,7 +504,7 @@ public final class Bridge implements SensorEventListener {
             }
         }catch(Exception e){
             eventStatus="error: "+rootCause(e);
-            if(pending!=null&&now-pendingAt>10000)pending=null;
+            eventCapability.failure(now,rootCause(e));pending=null;settingsLearning.reset();
         }
     }
     static String rootCause(Throwable e){while(e.getCause()!=null)e=e.getCause();return e.toString();}
@@ -492,7 +516,7 @@ public final class Bridge implements SensorEventListener {
             if(currentSerial<0)throw new IOException("user serial unavailable");
             if(currentUser!=user||currentSerial!=userSerial) {
                 clearOverride();user=currentUser;userSerial=currentSerial;pending=null;lastEvent=System.currentTimeMillis();
-                learningLux.reset();manual.cancel();
+                learningLux.reset();manual.cancel();settingsLearning.reset();
                 result=request("USER "+userSerial);
                 File legacy=new File(state,"legacy-offset.dat");
                 if(user==0&&(learningScope.isEmpty()||learningScope.equals("default"))&&result.optString("storage").equals("new")&&legacy.isFile())result=request("MIGRATE "+JSONObject.quote(legacy.getPath()));
@@ -525,7 +549,7 @@ public final class Bridge implements SensorEventListener {
             brightnessMaxReason=hasField(info,"brightnessMaxReason")?integer(info,"brightnessMaxReason"):-1;
             protectionReason=protection.update(now,thermalStatus,ProtectionPolicy.capReason(android.os.Build.VERSION.SDK_INT,hasField(info,"brightnessMaxReason"),brightnessMaxReason));
             blocked=blocked||!protectionReason.isEmpty();
-            if(!protectionReason.isEmpty()){eventStatus="paused_system_protection";clearOverride();pending=null;manual.cancel();lastEvent=System.currentTimeMillis();learningLux.reset();}
+            if(!protectionReason.isEmpty()){eventStatus="paused_system_protection";clearOverride();pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();learningLux.reset();}
             // On-change light sensors may be silent while stable; registration stays active.
             float primary=frontReading.effective(now), backLux=backReading.effective(now);
             if(registered&&(!sensorChoice.sysfs.isEmpty()||(!LuxFallback.valid(primary)&&!LuxFallback.valid(backLux))))requestFallback(now);
@@ -535,14 +559,19 @@ public final class Bridge implements SensorEventListener {
                 String scope=sourceScope(luxSource);
                 if(!scope.equals(learningScope)){clearOverride();result=request("SOURCE "+scope);learningScope=scope;}
             }
-            if(!luxSource.equals(learningSource)){learningLux.reset();pending=null;manual.cancel();lastEvent=System.currentTimeMillis();learningSource=luxSource;}
+            if(!luxSource.equals(learningSource)){learningLux.reset();pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();learningSource=luxSource;}
             learningLux.observe(lux,now,System.currentTimeMillis());
             eligible=automatic&&on&&!blocked&&!near&&lux>=0;
             result=request(String.format(Locale.ROOT,"FRAME2 %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d %d",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0,Calendar.getInstance().get(Calendar.HOUR_OF_DAY)));
-            if(result.optBoolean("ambient_guard")){eligible=false;learningLux.reset();}
-            if(!automatic||!on){pending=null;manual.cancel();lastEvent=System.currentTimeMillis();}
-            else if(manual.until>0){manualLearning(now,current);result=request("STATUS");}
-            else if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
+            if(result.optBoolean("ambient_guard")||!result.optBoolean("enabled")){eligible=false;learningLux.reset();}
+            if(!automatic||!on||!result.optBoolean("enabled")||!result.optBoolean("learning_enabled")){pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();}
+            else {
+                // A real event supersedes heuristic capture; an explicitly armed
+                // window retains its existing behavior on every ROM.
+                if(!(manual.until>0&&manual.origin.equals("manual"))&&now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
+                if(manual.until>0){manualLearning(now,current);result=request("STATUS");settingsLearning.reset();}
+                else settingsLearning(now,current);
+            }
             if(result.optBoolean("apply")&&now-changedAt>=2000&&pending==null&&manual.at<0&&!blocked&&!observe) {
                 float target=(float)result.getDouble("target");
                 if(!overridden||Math.abs(target-lastWrite)>.00001) {
@@ -554,6 +583,7 @@ public final class Bridge implements SensorEventListener {
             bridgeError="";
             boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&manual.until==0&&now-changedAt>5000&&luxSource.equals("front")&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
             pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
+            if(eligible&&result.optBoolean("settings_learning"))pollMs=Math.min(pollMs,1000);
             if(!protectionReason.isEmpty())result.put("reason",protectionReason).put("apply",false);
             result.put("boot_id",bootId).put("bridge_pid",android.os.Process.myPid())
                 .put("bridge_start",Health.processStart(android.os.Process.myPid())).put("core_start",Health.processStart(result.optLong("core_pid",-1)))
@@ -562,7 +592,7 @@ public final class Bridge implements SensorEventListener {
                 .put("manual_learning_available",true).put("manual_learning_armed",manual.until>now).put("learning_scope",learningScope).put("sensor_selection",sensorSelectionStatus)
                 .put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)
-                .put("calibration",calibrationStatus).put("learning_available",learningAvailable).put("window_override_detection",hasField(info,"isBrightnessOverrideByWindow")?"framework":("power_dump:"+windowState))
+                .put("calibration",calibrationStatus).put("learning_available",eventCapability.available()).put("event_capability",eventCapability.status).put("learning_value_source",calibrated?"calibrated_event":"stable_framework_output").put("window_override_detection",hasField(info,"isBrightnessOverrideByWindow")?"framework":("power_dump:"+windowState))
                 .put("learning_lux",lastLearningLux).put("framework_event_lux",lastFrameworkLux)
                 .put("poll_ms",pollMs).put("front_registered",frontReading.isRegistered()).put("front_sample_age_ms",frontReading.age(now))
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
@@ -580,7 +610,7 @@ public final class Bridge implements SensorEventListener {
             }
             if(now-lastStatus>=1000){replace(new File(state,"status.json"),result.toString());lastStatus=now;}
         }catch(Exception e) {
-            eligible=false;manual.cancel();pending=null;
+            eligible=false;manual.cancel();pending=null;settingsLearning.reset();
             String error=rootCause(e);if(!error.equals(bridgeError))System.err.println("bridge: "+error);bridgeError=error;
             try{clearOverride();}catch(Exception ignored){}
             try{result=new JSONObject().put("ok",false).put("bridge","degraded").put("error",bridgeError).put("heartbeat_ms",now);replace(new File(state,"status.json"),result.toString());}catch(Exception ignored){}
@@ -655,6 +685,11 @@ public final class Bridge implements SensorEventListener {
             }return;
         }
         if(args.length==3&&args[0].equals("health")){System.out.println(Health.report(new File(args[1]),new File(args[2])));return;}
+        if(args.length==1&&args[0].equals("backlight")) {
+            org.json.JSONArray rows=new org.json.JSONArray();
+            for(Backlight.Row row:Backlight.read(new File("/sys/class/backlight")))rows.put(new JSONObject().put("path",row.path).put("requested",row.requested).put("actual",row.actual).put("maximum",row.maximum));
+            System.out.println(new JSONObject().put("ok",true).put("nodes",rows));return;
+        }
         Looper.prepareMainLooper();Context context=systemContext();
         if(args.length>=2&&(args[0].equals("sensors-get")||args[0].equals("sensors-save"))) {
             SensorManager manager=(SensorManager)context.getSystemService(Context.SENSOR_SERVICE);

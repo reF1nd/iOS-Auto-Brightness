@@ -7,8 +7,10 @@ public final class ManualLearning {
     public float lux=-1,value=-1;
     private long stableAt=0;
     public String status="idle";
+    public String origin="manual";
     public void cancel(){until=0;at=-1;}
-    public void arm(long now){until=now+30000;at=-1;status="manual_armed_adjust_slider";}
+    public void arm(long now){until=now+30000;at=-1;origin="manual";status="manual_armed_adjust_slider";}
+    public void begin(long now,long eventWall,float eventLux,String source){arm(now);origin=source;change(now,eventWall,eventLux);status="pending_"+source;}
     public void change(long now,long eventWall,float eventLux) {
         if(until<=now)return;
         wall=eventWall;lux=eventLux;at=now;value=-1;stableAt=now;

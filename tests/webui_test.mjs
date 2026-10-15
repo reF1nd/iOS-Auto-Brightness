@@ -14,7 +14,7 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   }
   const document={hidden:false,getElementById(id){if(!elements.has(id)){const e=new Element();e.id=id;}return elements.get(id);},
     createElement(tag){return new Element(tag);},createElementNS(ns,tag){return new Element(tag);},querySelectorAll(){return [];}};
-  let online=true;
+  let online=true, logText='recent log';
   let config=await readFile(new URL('../module/default.conf',import.meta.url),'utf8');
   config=config.replace('manual_gamma=2.2','manual_gamma=2.7');
   const commands=[];
@@ -25,7 +25,8 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
     if(command.includes('config-read')){window[key](0,config,'');return;}
     if(command.includes('check_status.sh')){window[key](0,'OFFLINE: stale snapshot','');return;}
     if(command.startsWith('cat ')){window[key](0,config,'');return;}
-    if(command.includes('log-read')){window[key](0,'recent log','');return;}
+    if(command.includes('log-read')){window[key](0,logText,'');return;}
+    if(command.includes("'backlight'")){window[key](0,JSON.stringify({ok:true,nodes:[{path:'/sys/class/backlight/main',requested:200,actual:120,maximum:1000}]}),'');return;}
     if(command.includes("'log-clear'")){window[key](0,'{"ok":true}','');return;}
     if(command.includes("'sensors-get'")){window[key](0,JSON.stringify({ok:true,data:'front=\nback=\nsysfs=\n',sensors:['Exact Light']}),'');return;}
     if(command.includes("'sensors-save'")){window[key](0,'{"ok":true}','');return;}
@@ -48,6 +49,9 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   assert.ok(elements.get('status').children.some(c=>c.children.some(e=>e.textContent==='812')));
   assert.equal(elements.get('chart').children.at(-1).tag,'circle');
   assert.equal(elements.get('night_enabled').type,'checkbox');
+  assert.equal(elements.get('settings_learning').checked,false);
+  assert.match(elements.get('backlight').textContent,/请求值 200 · 驱动回报 120/);
+  assert.ok(elements.get('status').children.some(c=>c.children.some(e=>e.textContent==='框架报告亮度')));
   elements.get('alpha_fast').value='0.6';
   elements.get('alpha_fast').listeners.input();
   assert.match(elements.get('config').value,/alpha_fast=0.6/);
@@ -77,7 +81,10 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   await elements.get('logs').onclick();assert.equal(elements.get('log').textContent,'recent log');
   elements.get('clearLog').onclick();await new Promise(resolve=>setImmediate(resolve));
   assert.match(elements.get('log').textContent,/备份已清空/);
+  logText='new offline log';
   await elements.get('refresh').onclick();assert.equal(elements.get('status').children.length,0);
+  assert.equal(elements.get('log').textContent,'new offline log');
+  assert.match(elements.get('backlight').textContent,/驱动回报 120/);
   assert.match(elements.get('diagnostics').textContent,/OFFLINE/);
   elements.get('config').value='alpha_fast=0.5\n';elements.get('config').listeners.input();
   await elements.get('saveRaw').onclick();assert.equal(config,'alpha_fast=0.5\n');

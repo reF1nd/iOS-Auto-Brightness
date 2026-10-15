@@ -108,3 +108,35 @@ assert s.get('ok') and s.get('storage')=='saved' and s.get('points'),s
 assert any(abs(p['lux']-100)<1 for p in s['points']),s
 assert not s.get('manual_learning_armed'),s
 PYCODE
+
+# Opt-in continuous compatibility learning: no per-adjustment arm is required.
+adb shell "sed -i 's/settings_learning=0/settings_learning=1/' /data/local/tmp/iab-state/config.conf"
+sleep 6
+adb shell settings put system screen_brightness 181
+sleep 6
+adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-compat-learned.json
+python3 - <<'PYCODE'
+import json
+before=json.load(open('build/smoke-learned.json'));after=json.load(open('build/smoke-compat-learned.json'))
+assert after.get('settings_learning') and after.get('storage')=='saved',after
+assert max(p['time'] for p in after['points'])>max(p['time'] for p in before['points']),after
+assert after.get('event_status','').startswith('saved'),after
+PYCODE
+adb shell cmd thermalservice override-status 3
+sleep 3
+adb shell settings put system screen_brightness 191
+sleep 5
+adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-compat-protected.json
+python3 - <<'PYCODE'
+import json
+a=json.load(open('build/smoke-compat-learned.json'));b=json.load(open('build/smoke-compat-protected.json'))
+assert b.get('points')==a.get('points') and not b.get('apply') and not b.get('manual_learning_armed'),b
+assert b.get('protection')=='system_thermal',b
+PYCODE
+adb shell cmd thermalservice reset
+adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar app_process /system/bin org.ref1nd.brightness.Bridge backlight' > build/smoke-backlight.json
+python3 - <<'PYCODE'
+import json
+s=json.load(open('build/smoke-backlight.json'))
+assert s.get('ok') and isinstance(s.get('nodes'),list),s
+PYCODE

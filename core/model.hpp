@@ -12,7 +12,7 @@ struct Config {
     double manual_gamma=2.2; // Legacy import metadata; real brightness events need no gamma conversion.
     double high_lux_threshold=15000, high_lux_boost_max=.35, high_lux_min_pct=.90;
     int high_lux_duration_ms=8000;
-    bool learning_enabled=true, enabled=true;
+    bool learning_enabled=true, enabled=true, settings_learning=false;
     bool night_enabled=true, low_battery_enabled=true;
     int user_hold_ms=5000, log_max_bytes=1048576, log_max_backups=2;
     static Config parse(const std::string& text);

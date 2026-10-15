@@ -4,10 +4,11 @@ const root = '/data/adb/modules/ios_auto_brightness';
 const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
 let sequence = 0, busy = false, polling = false, dirty = false;
 let legacyGamma = '2.2', runtime = null, rawInvalid = false;
-const defaults = new Map(Object.entries({"enabled": "1", "learning_enabled": "1", "night_enabled": "1", "low_battery_enabled": "1", "manual_gamma": "2.2", "alpha_fast": "0.45", "alpha_mid": "0.20", "alpha_slow": "0.06", "fast_threshold": "1.0", "slow_threshold": "0.05", "spike_up": "15", "spike_down": "0.05", "hyst_low": "0.025", "hyst_high": "0.03", "high_lux_threshold": "15000", "high_lux_boost_max": "0.35", "high_lux_min_pct": "0.90", "high_lux_duration_ms": "8000", "user_hold_ms": "5000", "log_max_bytes": "1048576", "log_max_backups": "2"}));
+const defaults = new Map(Object.entries({"enabled": "1", "learning_enabled": "1", "settings_learning": "0", "night_enabled": "1", "low_battery_enabled": "1", "manual_gamma": "2.2", "alpha_fast": "0.45", "alpha_mid": "0.20", "alpha_slow": "0.06", "fast_threshold": "1.0", "slow_threshold": "0.05", "spike_up": "15", "spike_down": "0.05", "hyst_low": "0.025", "hyst_high": "0.03", "high_lux_threshold": "15000", "high_lux_boost_max": "0.35", "high_lux_min_pct": "0.90", "high_lux_duration_ms": "8000", "user_hold_ms": "5000", "log_max_bytes": "1048576", "log_max_backups": "2"}));
 const fields = [
   ['night_enabled','夜间默认亮度降低 5%',0,1,1], ['low_battery_enabled','低于 15% 电量额外限亮',0,1,1],
   ['enabled','启用调光',0,1,1], ['learning_enabled','记住手动调节',0,1,1],
+  ['settings_learning','持续兼容学习（根据设置变化；可能误学）',0,1,1],
   ['alpha_fast','快速响应',.01,.9,.01],['alpha_mid','中速响应',.01,.9,.01],['alpha_slow','慢速稳定',.001,.9,.001],
   ['fast_threshold','快速变化阈值',.1,5,.05],['slow_threshold','稳定阈值',.001,.5,.001],
   ['spike_up','上升尖峰阈值',2,50,.5],['spike_down','下降尖峰阈值',.001,.5,.001],
@@ -118,21 +119,28 @@ async function refresh(load=false) {
     const s=await ctl('status');
     runtime=s;$('version').textContent=`ROOT · ${s.version??'v7'}`;
     $('status').replaceChildren();
-    for(const [label,value] of [['服务',s.bridge],['控制状态',s.protection&&s.protection!=='clear'?'系统保护':s.ambient_guard?'位置变化保护':s.reason],['模式',s.mode],['环境光',s.lux>=0?`${s.lux.toFixed(1)} lux`:'等待传感器'],['目标',s.target===undefined?'—':`${(s.target*100).toFixed(2)}%`],['实际亮度',s.current===undefined?'—':`${(s.current*100).toFixed(2)}%`],['系统滑块值',s.slider??'—'],['处理间隔',s.poll_ms===undefined?'—':`${s.poll_ms} ms`],['光感来源',s.lux_source??'—'],['当前系统上限',s.maximum===undefined?'—':`${(s.maximum*100).toFixed(1)}%`]]) {
+    for(const [label,value] of [['服务',s.bridge],['控制状态',s.protection&&s.protection!=='clear'?'系统保护':s.ambient_guard?'位置变化保护':s.reason],['模式',s.mode],['环境光',s.lux>=0?`${s.lux.toFixed(1)} lux`:'等待传感器'],['目标',s.target===undefined?'—':`${(s.target*100).toFixed(2)}%`],['框架报告亮度',s.current===undefined?'—':`${(s.current*100).toFixed(2)}%`],['系统滑块值',s.slider??'—'],['处理间隔',s.poll_ms===undefined?'—':`${s.poll_ms} ms`],['光感来源',s.lux_source??'—'],['当前系统上限',s.maximum===undefined?'—':`${(s.maximum*100).toFixed(1)}%`]]) {
       const box=document.createElement('div');box.className='card';const l=document.createElement('span'),v=document.createElement('strong');l.textContent=label;v.textContent=value??'—';box.append(l,v);$('status').append(box);
     }
     $('learningState').textContent=`存储：${s.storage??'未知'} · 调节事件：${s.event_status??'等待'} · 用户序号：${s.user??'—'}`;
     $('points').replaceChildren();const table=document.createElement('table');
     for(const p of s.points??[]){const tr=document.createElement('tr');for(const value of [`${p.lux.toFixed(1)} lux`,`${(p.brightness*100).toFixed(2)}%`,new Date(p.time).toLocaleString()]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}$('points').append(table);
-    $('diagnostics').textContent=JSON.stringify({profile:s.profile,calibration:s.calibration,learning_available:s.learning_available,window_override_detection:s.window_override_detection,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,cpu_core_percent:s.cpu_core_percent,cpu_total_percent:(s.cpu_percent??0)+(s.cpu_core_percent??0),protection:s.protection,protection_signals:s.protection_signals,thermal_status:s.thermal_status,brightness_max_reason:s.brightness_max_reason,learning_scope:s.learning_scope,manual_learning_armed:s.manual_learning_armed,sensor_selection:s.sensor_selection,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
+    $('diagnostics').textContent=JSON.stringify({profile:s.profile,calibration:s.calibration,learning_available:s.learning_available,event_capability:s.event_capability,learning_value_source:s.learning_value_source,settings_learning:s.settings_learning,window_override_detection:s.window_override_detection,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,cpu_core_percent:s.cpu_core_percent,cpu_total_percent:(s.cpu_percent??0)+(s.cpu_core_percent??0),protection:s.protection,protection_signals:s.protection_signals,thermal_status:s.thermal_status,brightness_max_reason:s.brightness_max_reason,learning_scope:s.learning_scope,manual_learning_armed:s.manual_learning_armed,sensor_selection:s.sensor_selection,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
     preview();
-    $('curvePoint').textContent=`红点：当前实际输出 · 照度 ${s.lux>=0?s.lux.toFixed(2):'—'} lux · 系统设置 ${s.setting>=0?(s.setting*100).toFixed(2):'—'}%`;
-    if($('liveLog').checked)$('log').textContent=await exec(`sh ${quote(`${root}/control.sh`)} log-read`);
+    $('curvePoint').textContent=`红点：框架报告亮度 · 照度 ${s.lux>=0?s.lux.toFixed(2):'—'} lux · 系统设置 ${s.setting>=0?(s.setting*100).toFixed(2):'—'}%`;
     if(load&&!dirty)setConfig(await readConfig());
-    if(!busy)note(s.protection&&s.protection!=='clear'?'系统保护优先：已释放亮度控制并暂停学习。':s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':s.learning_available?'已连接。手动调节后，请确认学习状态为 saved。':'自动事件学习不可用，可点击“学习下一次手动调节”后再拖亮度条。');
+    if(!busy)note(s.protection&&s.protection!=='clear'?'系统保护优先：已释放亮度控制并暂停学习。':s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':s.settings_learning?'持续兼容学习已开启：真实事件优先，也会根据设置变化推断调节，可能误学。':s.learning_available?'已连接。手动调节后，请确认学习状态以 saved 开头。':'自动事件学习不可用，可点击“学习下一次手动调节”后再拖亮度条。');
   }catch(e){$('status').replaceChildren();$('learningState').textContent='服务离线：旧状态已清除';$('points').replaceChildren();runtime=null;preview();note(e.message);
     try{if(load&&!dirty)setConfig(await readConfig());$('diagnostics').textContent=await exec(`sh ${quote(`${root}/check_status.sh`)}`);}catch(d){$('diagnostics').textContent=d.message;}
-  }finally{polling=false;}
+  }finally{
+    try {
+      const snapshot=await ctl('backlight');
+      const value=n=>Number.isFinite(n)&&n>=0?String(n):'不可用';
+      $('backlight').textContent=snapshot.nodes.length?snapshot.nodes.map(n=>`${n.path}\n请求值 ${value(n.requested)} · 驱动回报 ${value(n.actual)} · 最大值 ${value(n.maximum)}`).join('\n\n'):'未发现可读背光节点';
+    }catch(e){$('backlight').textContent=`背光读取失败：${e.message}`;}
+    if($('liveLog').checked)try{$('log').textContent=await exec(`sh ${quote(`${root}/control.sh`)} log-read`);}catch(e){$('log').textContent=`日志读取失败：${e.message}`;}
+    polling=false;
+  }
 }
 async function action(fn) {
   if(busy)return;busy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);

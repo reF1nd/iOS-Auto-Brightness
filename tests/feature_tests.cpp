@@ -9,6 +9,9 @@ static Profile panel(){return Profile::parse("IAB_PROFILE_V1 test 3\n0 0\n100 0.
 static Frame frame(){Frame f;f.now=1000;f.automatic=true;f.screen=true;f.lux=100;f.back=100;f.current=.1;f.maximum=1;f.temp=30;f.battery=80;f.local_hour=12;return f;}
 static Output run(Controller& c,Frame& f,int count){Output o;for(int i=0;i<count;i++){f.now+=250;o=c.step(f);}return o;}
 int main(){try {
+    check(!Config::parse("").settings_learning,"compatibility learning is opt-in");
+    auto compatibility=Config::parse("settings_learning=1\n");
+    check(Config::parse(compatibility.serialize()).settings_learning,"compatibility setting survives save/reload");
     Controller c;c.profile=panel();c.config.hyst_low=0;c.config.hyst_high=0;Frame f=frame();
     for(int hour:{0,5,6,17,18,23}) {
         c.reset();f.local_hour=hour;c.step(f);run(c,f,30);

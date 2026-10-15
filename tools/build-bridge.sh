@@ -20,3 +20,5 @@ javac -cp build/bridge/classes -d build/bridge/test-classes tests/ProtectionPoli
 java -cp build/bridge/classes:build/bridge/test-classes ProtectionPolicyTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/ManualLearningTest.java
 java -cp build/bridge/classes:build/bridge/test-classes ManualLearningTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/ParityCompletionTest.java
+java -cp build/bridge/classes:build/bridge/test-classes ParityCompletionTest

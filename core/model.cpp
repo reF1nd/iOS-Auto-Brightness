@@ -56,7 +56,7 @@ Config Config::parse(const std::string& text) {
     integer("user_hold_ms",c.user_hold_ms,2000,30000);
     integer("log_max_bytes",c.log_max_bytes,65536,8388608); integer("log_max_backups",c.log_max_backups,1,8);
     boolean("night_enabled",c.night_enabled); boolean("low_battery_enabled",c.low_battery_enabled);
-    boolean("learning_enabled",c.learning_enabled); boolean("enabled",c.enabled);
+    boolean("settings_learning",c.settings_learning); boolean("learning_enabled",c.learning_enabled); boolean("enabled",c.enabled);
     if(!values.empty()) throw std::runtime_error("unknown key: "+values.begin()->first);
     if(c.alpha_slow>c.alpha_mid||c.alpha_mid>c.alpha_fast||c.slow_threshold>=c.fast_threshold) throw std::runtime_error("inconsistent response thresholds");
     return c;
@@ -64,7 +64,7 @@ Config Config::parse(const std::string& text) {
 std::string Config::serialize() const {
     std::ostringstream s; s<<std::setprecision(9);
 #define FIELD(x) s<<#x<<'='<<x<<'\n'
-    FIELD(enabled);FIELD(learning_enabled);FIELD(night_enabled);FIELD(low_battery_enabled);FIELD(manual_gamma);FIELD(alpha_fast);FIELD(alpha_mid);FIELD(alpha_slow);
+    FIELD(enabled);FIELD(learning_enabled);FIELD(settings_learning);FIELD(night_enabled);FIELD(low_battery_enabled);FIELD(manual_gamma);FIELD(alpha_fast);FIELD(alpha_mid);FIELD(alpha_slow);
     FIELD(fast_threshold);FIELD(slow_threshold);FIELD(spike_up);FIELD(spike_down);FIELD(hyst_low);FIELD(hyst_high);
     FIELD(high_lux_threshold);FIELD(high_lux_boost_max);FIELD(high_lux_min_pct);FIELD(high_lux_duration_ms);
     FIELD(user_hold_ms);FIELD(log_max_bytes);FIELD(log_max_backups);

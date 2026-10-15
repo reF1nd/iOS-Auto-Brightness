@@ -50,3 +50,11 @@ sh /data/adb/modules/ios_auto_brightness/control.sh config-read
 Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已知能力缺失不会冒充字段读取成功：状态显示 `thermal_and_system_cap_only`，使用系统热状态及实时亮度上下限保护，禁用丢失输出的自动重试。Android 13+ 应有该字段而缺失、或热状态查询失败时，暂停接管。接口依据：[Android 12L](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-12.1.0_r1/core/java/android/hardware/display/BrightnessInfo.java)、[Android 13](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-13.0.0_r1/core/java/android/hardware/display/BrightnessInfo.java)。
 
 可选 Sensor 仅包含标准 TYPE_LIGHT 或厂商明确声明 lux 的类型；原始通道（raw）和视场辅助量（fov）从选择、后置发现和 dumpsys 自动发现中排除。只按名称含 light/ALS 判断单位并不可靠。
+
+## beta.9 更新
+
+上文“无校准禁用自动事件学习”由本节替代：有可读取的真实调节事件时，可等待调节后的稳定框架亮度，直接保存归一化值，不使用通用曲线换算事件 nits。延迟超过 3 秒的事件拒绝用于该路径，温控、覆盖、来源切换等均取消捕获。自动接口运行故障时 `learning_available=false`，`event_capability` 给出原因；每 30 秒重试并在成功后恢复。
+
+`settings_learning` 为默认关闭的持续兼容学习开关，适用于接口缺失、调用失败、或者接口可读却没有调节事件的 ROM。开启后轮询当前用户设置，捕获后等待亮度稳定；真实事件优先。它仍可能误认系统对设置的自动修改，不能与可靠事件学习等同。切用户、换来源、时间改变、系统保护或不满足学习条件时清除候选和设置基线，保护解除后不学习保护期间累积的变化。配置和学习总开关仍有效。
+
+备用 dumpsys 读数可通过每次新 dump 中的活跃 HAL 订阅和明确 on-change/lux 元数据延长有效性，原始时间戳不伪装为新事件。不识别的格式继续保守退出；既有直接监听行为保持不变。`control.sh backlight` 可独立读取所有背光节点（包括服务离线时），只用于诊断，不向节点写入。界面不将框架报告值或节点值称为实测屏幕亮度。
