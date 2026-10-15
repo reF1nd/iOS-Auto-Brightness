@@ -226,7 +226,8 @@ Output Controller::step(const Frame& f) {
     if(changed) {
         bool reverse=ramp_target_>=0 && (target-output_)*(ramp_target_-output_)<0;
         if(ramp_duration_==0 || reverse || (fast_dark_&&ramp_duration_>200)) {
-            ramp_from_=output_;ramp_at_=f.now-static_cast<int64_t>(dt*1000);
+            // Time spent asleep preceded this target; it must not consume the new ramp.
+            ramp_from_=output_;ramp_at_=f.now-static_cast<int64_t>(std::min(dt,.25)*1000);
             double distance=std::abs(target-output_);
             ramp_duration_=rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))));
         }

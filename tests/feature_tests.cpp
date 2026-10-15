@@ -51,6 +51,9 @@ int main(){try {
     check(o.value==.1,"brightening uses low-level hysteresis at low brightness");
     hysteresis.learning.add(100,.095,20);o=run(hysteresis,f,20);
     check(o.value==.1,"dimming uses the same level-dependent hysteresis");
+    Controller idle;idle.profile=panel();f=frame();idle.step(f);run(idle,f,20);
+    f.now+=8000;f.lux=1000;f.back=1000;o=idle.step(f);
+    check(o.value<idle.desired(),"idle time before a new reading cannot skip its transition");
     auto cfg=Config::parse("manual_gamma=2.6\nalpha_fast=.5\n");
     check(cfg.manual_gamma==2.6&&Config::parse(cfg.serialize()).alpha_fast==.5,"legacy gamma and tuning survive roundtrip");
     std::cout<<"Night, low battery, sunlight hysteresis, transition and legacy config contracts passed\n";
