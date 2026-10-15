@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag matching module.prop
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
+      tag: ${{ steps.identity.outputs.tag }}
+      prerelease: ${{ steps.identity.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag, version and release notes
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 tools/release.py metadata "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          test "$sha" = "$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_ref: ${{ needs.validate.outputs.sha }}
+    permissions:
+      contents: read
+
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      SOURCE_SHA: ${{ needs.validate.outputs.sha }}
+      PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: kernelsu-module
+          path: release-assets
+      - name: Verify tested package and unchanged remote tag
+        run: |
+          python3 tools/release.py verify "$RELEASE_TAG" "$SOURCE_SHA" release-assets
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          python3 tools/release.py notes "$RELEASE_TAG" > release-notes.md
+          printf '\n\nSource: `%s`\n\n[Build and verification](https://github.com/%s/actions/runs/%s)\n' \
+            "$SOURCE_SHA" "$GH_REPO" "$GITHUB_RUN_ID" >> release-notes.md
+      - name: Upload verified assets, then publish
+        run: |
+          # Never replace assets or notes of an already public release.
+          if gh release view "$RELEASE_TAG" --json isDraft > existing-release.json; then
+            python3 -c 'import json; assert json.load(open("existing-release.json"))["isDraft"], "Release already published; use a new version"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --target "$SOURCE_SHA" \
+              --title "$RELEASE_TAG" --notes-file release-notes.md --draft
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/*.zip release-assets/*.sha256 --clobber
+          latest=true
+          if [ "$PRERELEASE" = true ]; then latest=false; fi
+          gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md \
+            --prerelease="$PRERELEASE" --draft=false --latest="$latest"
+          gh release view "$RELEASE_TAG" --json url,isDraft,isPrerelease,assets
