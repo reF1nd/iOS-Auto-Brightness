@@ -191,9 +191,12 @@ public final class Bridge implements SensorEventListener {
                 if(choice.size()!=2||!displayId.equals(choice.getProperty("display")))throw new IOException("backlight binding display mismatch");
                 node=choice.getProperty("node","");
             }else {
-                String device=(String)Class.forName("android.os.SystemProperties").getMethod("get",String.class,String.class).invoke(null,"ro.product.device","");
-                // Verified dual-panel device: only the calibrated main panel is bound.
-                if(device.equals("altdb")&&profileName.equals("altdb-main-hyperos4"))node="panel0-backlight";
+                // Product names can be spoofed per process. Use the verified panel
+                // calibration, main display geometry and dual-panel node ranges.
+                Display.Mode mode=display.getDisplay(0).getMode();
+                if(profileName.equals("altdb-main-hyperos4")&&mode.getPhysicalWidth()==1200&&mode.getPhysicalHeight()==2608
+                    &&Backlight.number(new File(BACKLIGHT_ROOT,"panel0-backlight/max_brightness"))==16383
+                    &&Backlight.number(new File(BACKLIGHT_ROOT,"panel1-backlight/max_brightness"))==4095)node="panel0-backlight";
                 else throw new IOException("explicit main-panel backlight.conf binding required");
             }
             direct=new DirectBacklight(BACKLIGHT_ROOT,node,new File(state,"direct-output.properties"),displayId,bootId);

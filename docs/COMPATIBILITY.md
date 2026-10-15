@@ -69,7 +69,7 @@ Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已�
 
 ## 直接背光输出与节点绑定
 
-输出后端为 `direct_sysfs`。已验证的 altdb 主屏校准可自动绑定 `panel0-backlight`；其他设备在 `/data/adb/ios_auto_brightness/backlight.conf` 显式填写两项后重启服务：
+输出后端为 `direct_sysfs`。已验证的 altdb 主屏校准、主屏尺寸和双屏节点量程全部匹配时可自动绑定 `panel0-backlight`；其他设备在 `/data/adb/ios_auto_brightness/backlight.conf` 显式填写两项后重启服务：
 
 ```properties
 display=实际默认主屏的 uniqueId
