@@ -70,6 +70,7 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   assert.ok(elements.get('chart').children.some(e=>e.attrs.stroke==='#af52de'));
   const oldCurve=runtime.curve,oldCap=runtime.maximum;
   runtime.curve=[[15000,.1,.1],[22500,.1,.1],[30000,.1,.1]];runtime.maximum=1;runtime.local_hour=12;
+  await elements.get('refresh').onclick();
   elements.get('high_lux_min_pct').value='0.9';elements.get('high_lux_min_pct').listeners.input();
   const solar=elements.get('chart').children.find(e=>e.attrs.stroke==='#af52de');
   const solarY=solar.attrs.d.split(' ').map(p=>Number(p.split(',')[1]));
