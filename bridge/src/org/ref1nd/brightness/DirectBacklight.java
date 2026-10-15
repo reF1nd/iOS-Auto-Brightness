@@ -12,6 +12,7 @@ public final class DirectBacklight {
     private final Readback readback;
     private final File node, journal;
     private final BacklightLease lease;
+    private RandomAccessFile writer;
     private float baselineFramework=Float.NaN;
     private final String display, boot;
     public final long maximum;
@@ -73,8 +74,12 @@ public final class DirectBacklight {
         }
     }
     private void abandon(long now,String reason) throws IOException {
-        if(lease!=null)lease.release();
+        releaseAccess();
         last=-1;stableAt=-1;baseline=-1;retryAt=now+2000;status=reason;Files.deleteIfExists(journal.toPath());
+    }
+    private void releaseAccess()throws IOException {
+        try{if(writer!=null)writer.close();}
+        finally{writer=null;if(lease!=null)lease.release();}
     }
     public void write(float target,float cap) throws IOException {
         synchronized(DirectBacklight.class) {
@@ -85,7 +90,13 @@ public final class DirectBacklight {
         long before=requested();
         if((owned()?before!=last:before!=baseline)||!close(actual(),before))throw new IOException("backlight ownership changed before write");
         if(owned()&&raw==last)return;
-        if(lease!=null)lease.acquire();
+        try {
+        if(lease!=null) {
+            // app_process can lack DAC override despite uid 0. Retain a handle
+            // opened while writable rather than reopening after chmod 0444.
+            if(writer==null)writer=new RandomAccessFile(new File(node,"brightness"),"rw");
+            lease.acquire();
+        }
         Properties p=new Properties();p.setProperty("node",node.getName());p.setProperty("display",display);
         p.setProperty("boot",boot);p.setProperty("maximum",Long.toString(maximum));p.setProperty("last",Long.toString(raw));
         p.setProperty("readback",readback==null?"sysfs":"mi");p.setProperty("systemRaw",Long.toString(baseline));p.setProperty("framework",Float.toString(baselineFramework));
@@ -94,8 +105,10 @@ public final class DirectBacklight {
             try(FileOutputStream out=new FileOutputStream(tmp)){p.store(out,"IAB direct output recovery");out.getFD().sync();}
             Files.move(tmp.toPath(),journal.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
         }finally{tmp.delete();}
-        try {writeNode(new File(node,"brightness"),raw);last=raw;status="direct_active";}
-        catch(IOException e){last=-1;throw e;}
+        if(writer!=null){writer.seek(0);writer.write((raw+"\n").getBytes(StandardCharsets.US_ASCII));}
+        else writeNode(new File(node,"brightness"),raw);
+        last=raw;status="direct_active";
+        }catch(IOException|RuntimeException e){last=-1;releaseAccess();throw e;}
         }
     }
     static void writeNode(File path,long value) throws IOException {
@@ -128,7 +141,7 @@ public final class DirectBacklight {
         }catch(IllegalArgumentException e){throw new IOException("invalid backlight recovery data",e);}
         finally{Files.deleteIfExists(journal.toPath());}
     }
-    public void released()throws IOException {if(lease!=null)lease.release();last=-1;stableAt=-1;baseline=-1;status="released";}
+    public void released()throws IOException {releaseAccess();last=-1;stableAt=-1;baseline=-1;status="released";}
     /** Framework -> HAL identity must be proven, never assume two normalized ranges match. */
     public static boolean identityMapping(String dump,String display) {
         try {

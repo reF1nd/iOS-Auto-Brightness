@@ -60,6 +60,16 @@ public final class BacklightLeaseTest {
             d.ready(6000,.2f);d.ready(7000,.2f);d.write(.3f,1);set(panel,"actual_brightness",300);
             mode[0]="rw-rw-r--";
             check(!d.ready(7100,.2f)&&mode[0].equals("rw-rw-r--"),"external unlock is not fought");
+            // Actual chmod plus actual writes as the unprivileged Actions user:
+            // reopening 0444 fails, a descriptor opened before locking survives.
+            posix.set(file,"rw-r--r--");set(panel,"brightness",200);set(panel,"actual_brightness",200);
+            var live=new DirectBacklight(root.toFile(),"panel0",root.resolve("direct-output.properties").toFile(),"main","boot",null,posix);
+            live.ready(8000,.2f);live.ready(9000,.2f);
+            live.write(.3f,1);set(panel,"actual_brightness",300);
+            check(posix.get(file).equals("r--r--r--")&&Files.readString(file.toPath()).trim().equals("300"),"retained descriptor writes after real chmod");
+            live.write(.31f,1);set(panel,"actual_brightness",310);
+            check(Files.readString(file.toPath()).trim().equals("310"),"subsequent write seeks to start without reopening");
+            live.released();check(posix.get(file).equals("rw-r--r--"),"close retained descriptor and restore mode");
             System.out.println("Backlight permission acquisition, normal/crash recovery, foreign ownership and direct output passed");
         }finally{try(var paths=Files.walk(root)){for(Path p:paths.sorted(java.util.Comparator.reverseOrder()).toList())Files.delete(p);}}
     }
