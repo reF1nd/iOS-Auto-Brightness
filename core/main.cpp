@@ -46,6 +46,8 @@ int main(int argc,char**argv) {
         Store store{dir,core.profile.id,0};bool hasUser=false;Output last;
         std::cout<<std::setprecision(10);
         std::string line;
+        rusage initialUsage{};getrusage(RUSAGE_SELF,&initialUsage);
+        const double initialCpu=initialUsage.ru_utime.tv_sec+initialUsage.ru_utime.tv_usec/1e6+initialUsage.ru_stime.tv_sec+initialUsage.ru_stime.tv_usec/1e6;
         const auto started=std::chrono::steady_clock::now();
         auto status=[&]() {
             rusage usage{};getrusage(RUSAGE_SELF,&usage);
@@ -55,7 +57,7 @@ int main(int argc,char**argv) {
             bool comma=false;for(auto&p:core.learning.points){if(comma)o<<',';comma=true;o<<"{\"lux\":"<<p.lux<<",\"brightness\":"<<p.value<<",\"time\":"<<p.time<<'}';}
             o<<"],\"legacy_offset\":"<<core.learning.legacy_offset<<",\"local_hour\":"<<core.frame().local_hour<<",\"curve\":[";
             for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.profile.toBrightness(baseNits(lux))<<','<<core.learning.target(lux,core.profile,core.nightScale())<<']';}
-            o<<"],\"core_pid\":"<<getpid()<<",\"cpu_core_percent\":"<<(elapsed>0?100*cpu/elapsed:0)<<"}";return o.str();
+            o<<"],\"core_pid\":"<<getpid()<<",\"cpu_core_percent\":"<<(elapsed>0?100*(cpu-initialCpu)/elapsed:0)<<"}";return o.str();
         };
         while(std::getline(std::cin,line)) {
             try {

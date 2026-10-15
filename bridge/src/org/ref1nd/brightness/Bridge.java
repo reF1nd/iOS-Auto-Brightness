@@ -62,6 +62,7 @@ public final class Bridge implements SensorEventListener {
     SensorChoice sensorChoice=new SensorChoice("");
     final String bootId;
     final ManualLearning manual=new ManualLearning();
+    String manualSlider=null, manualAdjustment=null;
     int thermalStatus=-1, brightnessMaxReason=-1;
     long recoveryRequested=-10000, lastWriteAt=0;
     boolean recoveryBusy=false;
@@ -84,6 +85,7 @@ public final class Bridge implements SensorEventListener {
     long userSerial=-1, lastEvent=System.currentTimeMillis(), frontAt=0, pendingAt=0;
     long changedAt=-10000, lastFrame=0, lastThermal=0, lastStatus=0;
     long started=SystemClock.elapsedRealtime(), lastConfigCheck=0;
+    final long cpuStarted=android.os.Process.getElapsedCpuTime();
     String configText="";
     float temperature=-1, lastWrite=-1, lastLoggedTarget=-1;
     long lastDecisionLog=0;
@@ -226,6 +228,16 @@ public final class Bridge implements SensorEventListener {
         },"iab-output-check").start();
     }
     void manualLearning(long now,float value) throws Exception {
+        // Some app_process hosts receive no ContentObserver callbacks. Only an
+        // explicit user-armed window may interpret a current-user settings delta.
+        String slider=systemSetting(user,Settings.System.SCREEN_BRIGHTNESS);
+        String adjustment=systemSetting(user,"screen_auto_brightness_adj");
+        boolean changed=manual.settingChanged(manualSlider,slider)||manual.settingChanged(manualAdjustment,adjustment);
+        manualSlider=slider;manualAdjustment=adjustment;
+        if(changed&&eligible&&protectionReason.isEmpty()) {
+            long wall=System.currentTimeMillis();manual.change(now,wall,learningLux.atEvent(wall,now,wall));
+            changedAt=now;request("HOLD "+now);clearOverride();
+        }
         boolean ready=manual.sample(now,eligible&&protectionReason.isEmpty(),value);
         eventStatus=manual.status;
         if(!ready)return;
@@ -271,9 +283,6 @@ public final class Bridge implements SensorEventListener {
             @Override public void onChange(boolean selfChange,android.net.Uri uri) {
                 if(closing.get())return;
                 changedAt=SystemClock.elapsedRealtime();wake();
-                if(manual.until>changedAt&&eligible&&uri!=null&&(uri.equals(Settings.System.getUriFor(Settings.System.SCREEN_BRIGHTNESS))||uri.equals(Settings.System.getUriFor("screen_auto_brightness_adj")))) {
-                    long wall=System.currentTimeMillis();manual.change(changedAt,wall,learningLux.atEvent(wall,changedAt,wall));pending=null;
-                }
                 try{request("HOLD "+changedAt);clearOverride();}catch(Exception e){bridgeError=e.toString();}
             }
         };
@@ -517,7 +526,7 @@ public final class Bridge implements SensorEventListener {
             brightnessMaxReason=hasField(info,"brightnessMaxReason")?integer(info,"brightnessMaxReason"):-1;
             protectionReason=protection.update(now,thermalStatus,ProtectionPolicy.capReason(android.os.Build.VERSION.SDK_INT,hasField(info,"brightnessMaxReason"),brightnessMaxReason));
             blocked=blocked||!protectionReason.isEmpty();
-            if(!protectionReason.isEmpty()){clearOverride();pending=null;manual.cancel();lastEvent=System.currentTimeMillis();learningLux.reset();}
+            if(!protectionReason.isEmpty()){eventStatus="paused_system_protection";clearOverride();pending=null;manual.cancel();lastEvent=System.currentTimeMillis();learningLux.reset();}
             // On-change light sensors may be silent while stable; registration stays active.
             float primary=frontReading.effective(now), backLux=backReading.effective(now);
             if(registered&&(!sensorChoice.sysfs.isEmpty()||(!LuxFallback.valid(primary)&&!LuxFallback.valid(backLux))))requestFallback(now);
@@ -544,7 +553,7 @@ public final class Bridge implements SensorEventListener {
                 else if(brightnessMaxReason==0&&Math.abs(target-current)>Math.max(.0005f,target*.1f)&&!blocked)requestRecovery(now);
             }else clearOverride();
             bridgeError="";
-            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&now-changedAt>5000&&luxSource.equals("front")&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
+            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&manual.until==0&&now-changedAt>5000&&luxSource.equals("front")&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
             pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
             if(!protectionReason.isEmpty())result.put("reason",protectionReason).put("apply",false);
             result.put("boot_id",bootId).put("bridge_pid",android.os.Process.myPid())
@@ -562,7 +571,7 @@ public final class Bridge implements SensorEventListener {
                 .put("back_sample_age_ms",backReading.age(now)).put("back_registered",backReading.isRegistered())
                 .put("back_reporting_mode",back==null?-1:back.getReportingMode())
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
-                .put("slider",systemSetting(user,Settings.System.SCREEN_BRIGHTNESS)).put("version",version).put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
+                .put("slider",systemSetting(user,Settings.System.SCREEN_BRIGHTNESS)).put("version",version).put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*(android.os.Process.getElapsedCpuTime()-cpuStarted)/Math.max(1,now-started));
             String reason=result.optString("reason");
             float target=(float)result.optDouble("target",-1);
             boolean significant=lastLoggedTarget<0||Math.abs(target-lastLoggedTarget)>Math.max(.0005f,Math.abs(lastLoggedTarget)*.08f);
@@ -589,6 +598,7 @@ public final class Bridge implements SensorEventListener {
         if(cmd.equals("learn-arm")) {
             tick();
             if(!eligible||!protectionReason.isEmpty()||result.optBoolean("ambient_guard")||!result.optBoolean("settled"))throw new IOException("screen, automatic mode and stable unprotected lux required");
+            manualSlider=systemSetting(user,Settings.System.SCREEN_BRIGHTNESS);manualAdjustment=systemSetting(user,"screen_auto_brightness_adj");
             manual.arm(SystemClock.elapsedRealtime());pending=null;eventStatus="manual_armed_adjust_slider";wake();
             return new JSONObject().put("ok",true);
         }

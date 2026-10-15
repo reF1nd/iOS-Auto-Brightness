@@ -13,6 +13,9 @@ public final class ManualLearning {
         if(until<=now)return;
         wall=eventWall;lux=eventLux;at=now;value=-1;stableAt=now;
     }
+    public boolean settingChanged(String before,String after) {
+        return until>0&&before!=null&&after!=null&&!before.equals(after);
+    }
     public boolean sample(long now,boolean eligible,float brightness) {
         if(until==0)return false;
         if(now>until||!eligible){cancel();status="manual_cancelled_state";return false;}

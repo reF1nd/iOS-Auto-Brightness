@@ -5,7 +5,8 @@ public final class ManualLearningTest {
     public static void main(String[] args) {
         var m=new ManualLearning();
         m.change(1000,100000,10);check(!m.sample(4000,true,.1f),"unarmed settings changes never teach");
-        m.arm(5000);check(!m.sample(8000,true,.1f),"arming alone never teaches module output");
+        check(!m.settingChanged("1","2"),"unarmed polling cannot infer intent");
+        m.arm(5000);check(m.settingChanged("1","2")&&!m.settingChanged(null,"2")&&!m.settingChanged("2","2"),"armed delta requires a real baseline");check(!m.sample(8000,true,.1f),"arming alone never teaches module output");
         m.change(9000,109000,20);check(!m.sample(9000,true,.2f),"wait for actual output");
         check(!m.sample(10000,true,.3f),"moving output resets stability");
         check(!m.sample(11499,true,.3f),"full stability window");
