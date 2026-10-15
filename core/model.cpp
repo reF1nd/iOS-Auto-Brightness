@@ -128,12 +128,13 @@ double Controller::nightScale() const {
 void Controller::reset() {
     frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;dark_pending_=false;dark_since_=-1;
+    guard_front_=0;guard_back_=0;guard_confirmed_=false;guard_missing_=false;ambient_history_.clear();
     high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;alpha_=0;desired_=0;
     sunlight_target_=0;ramp_from_=0;ramp_target_=-1;ramp_at_=0;ramp_duration_=0;fast_until_=0;
 }
 void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
 bool Controller::learn(double lux,double value,int64_t time) {
-    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||smooth_<0||frame_.lux<0) return false;
+    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||dark_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
     learning.add(lux,value,time);hold(frame_.now);return true;
@@ -148,20 +149,36 @@ Output Controller::step(const Frame& f) {
     if(!f.screen) {reset();return release("screen_off");}
     if(f.blocked) return release("system_override");
     if(f.near) return release("proximity");
-    if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {smooth_=-1;return release("sensor_unavailable");}
+    if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {smooth_=-1;dark_pending_=false;dark_since_=-1;guard_confirmed_=false;ambient_history_.clear();return release("sensor_unavailable");}
     if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) return release("limits_unavailable");
     double lux=f.lux;
     // A covered rear sensor is normal on a desk. It can extend spike
     // confirmation, but must never cap a stable front-light measurement.
     double dt=last_?std::clamp((f.now-last_)/1000.0,.01,8.0):.25;last_=f.now;
-    // A local front-sensor obstruction need not mean the room became dark.
-    // Confirm disagreement before reducing brightness; never accelerate that drop.
+    // Keep a bounded recent rear baseline, including the value carried into
+    // the window. Rear events can precede a front event when entering darkness.
+    while(ambient_history_.size()>1&&ambient_history_[1].now<f.now-5000)ambient_history_.erase(ambient_history_.begin());
+    double rearBaseline=f.back;
+    for(const auto& previous:ambient_history_)if(std::isfinite(previous.back))rearBaseline=std::max(rearBaseline,previous.back);
+    ambient_history_.push_back(f);
+    if(ambient_history_.size()>256)ambient_history_.erase(ambient_history_.begin());
     bool rearBright=std::isfinite(f.back)&&f.back>=0&&f.back>std::max(lux*4,20.0);
-    dark_pending_=false;
-    if(smooth_>=1 && lux<smooth_*.65 && rearBright) {
-        if(dark_since_<0)dark_since_=f.now;
-        dark_pending_=f.now-dark_since_<3000;
-    } else dark_since_=-1;
+    if(guard_confirmed_&&lux>=smooth_*.8)guard_confirmed_=false;
+    if(!dark_pending_&&!guard_confirmed_&&smooth_>=1&&lux<smooth_*.65&&rearBright) {
+        dark_pending_=true;dark_since_=-1;guard_front_=smooth_;guard_back_=rearBaseline;
+    }
+    if(dark_pending_) {
+        bool rearValid=std::isfinite(f.back)&&f.back>=0&&f.back<=200000;
+        double frontRatio=(lux+1)/(guard_front_+1),rearRatio=(f.back+1)/(guard_back_+1);
+        bool corroborated=rearValid&&(!rearBright||(rearRatio<=.5&&rearRatio<=frontRatio*1.5));
+        if(lux>=guard_front_*.8) {dark_pending_=false;dark_since_=-1;}
+        else if(corroborated||!rearValid) {
+            if(dark_since_<0||guard_missing_!=!rearValid)dark_since_=f.now;
+            guard_missing_=!rearValid;
+            // Missing rear readings cannot hold the screen indefinitely.
+            if(f.now-dark_since_>=(rearValid?2000:5000)){dark_pending_=false;dark_since_=-1;guard_confirmed_=true;}
+        } else dark_since_=-1;
+    }
     if(dark_pending_)lux=smooth_;
     trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
     if(trend_.size()>=3) {
@@ -218,6 +235,9 @@ Output Controller::step(const Frame& f) {
     // Normalized 1.0 is the panel maximum; do not multiply the system cap by .7.
     bool lowBattery=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging;
     double cap=lowBattery?std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
+    // Hold actual output rather than recomputing a different point on the curve.
+    // A manual adjustment still takes effect, but cannot teach a shaded sample.
+    if(dark_pending_)target=output_>=0?output_:f.current;
     target=std::clamp(target,f.minimum,cap);
     if(output_<0)output_=std::clamp(f.current,f.minimum,cap);
     // low/high refer to brightness level, not the direction of the change.
@@ -234,12 +254,16 @@ Output Controller::step(const Frame& f) {
         ramp_target_=target;
         double t=std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
         double eased=t<.5?4*t*t*t:1-std::pow(-2*t+2,3)/2;
-        output_=ramp_from_+(ramp_target_-ramp_from_)*eased;
-        if(t>=1)ramp_duration_=0;
+        double previous=output_;
+        output_=std::clamp(ramp_from_+(ramp_target_-ramp_from_)*eased,std::min(previous,target),std::max(previous,target));
+        // Moving endpoints must not bypass the downward slew limit. Ignore
+        // sleep time before a new target; system/low-battery caps below win.
+        if(output_<previous)output_=std::max(output_,previous*std::pow(.8,std::min(dt,.25)));
+        if(t>=1&&std::abs(output_-target)<.00001)ramp_duration_=0;
         desired_=target;
     } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;}
     output_=std::clamp(output_,f.minimum,cap);
-    return {true,output_,lowBattery?"low_battery_limit":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto")))};
+    return {true,output_,lowBattery?"low_battery_limit":(dark_pending_?"ambient_guard":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto"))))};
 }
 std::string jsonString(const std::string& s) {
     std::ostringstream o;o<<'"';for(unsigned char c:s) {switch(c){case '"':o<<"\\\"";break;case '\\':o<<"\\\\";break;case '\n':o<<"\\n";break;case '\r':o<<"\\r";break;case '\t':o<<"\\t";break;default:if(c<32)o<<"\\u"<<std::hex<<std::setw(4)<<std::setfill('0')<<static_cast<int>(c)<<std::dec;else o<<c;}}o<<'"';return o.str();

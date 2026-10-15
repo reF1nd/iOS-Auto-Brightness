@@ -299,8 +299,8 @@ public final class Bridge implements SensorEventListener {
         if(!registered||e.values.length==0)return;
         float v=e.values[0];if(!Float.isFinite(v)||v<0)return;
         boolean changed=false;
-        if(e.sensor==front){changed=PollCadence.changed(v,frontLux);frontLux=v;frontAt=SystemClock.elapsedRealtime();frontReading.update(v,frontAt);learningLux.observe(v,frontAt,System.currentTimeMillis());}
-        else if(e.sensor==back){changed=!LuxFallback.valid(frontReading.effective(SystemClock.elapsedRealtime()))&&PollCadence.changed(v,backReading.raw());backReading.update(v,SystemClock.elapsedRealtime());}
+        if(e.sensor==front){changed=PollCadence.changed(v,frontLux);frontLux=v;frontAt=SystemClock.elapsedRealtime();frontReading.update(v,frontAt);if(!result.optBoolean("ambient_guard"))learningLux.observe(v,frontAt,System.currentTimeMillis());}
+        else if(e.sensor==back){changed=(result.optBoolean("ambient_guard")||!LuxFallback.valid(frontReading.effective(SystemClock.elapsedRealtime())))&&PollCadence.changed(v,backReading.raw());backReading.update(v,SystemClock.elapsedRealtime());}
         else if(e.sensor==proximity){boolean value=v<Math.min(5,proximity.getMaximumRange());changed=near!=value;near=value;}
         if(changed)wake();
     }
@@ -420,6 +420,7 @@ public final class Bridge implements SensorEventListener {
             float lux=registered?selected.lux:-1;luxSource=registered?selected.source:"suspended";
             eligible=automatic&&on&&!blocked&&!near&&lux>=0&&luxSource.equals("front");
             result=request(String.format(Locale.ROOT,"FRAME2 %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d %d",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0,Calendar.getInstance().get(Calendar.HOUR_OF_DAY)));
+            if(result.optBoolean("ambient_guard")){eligible=false;learningLux.reset();}
             if(!automatic||!on){pending=null;lastEvent=System.currentTimeMillis();}
             else if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
             if(result.optBoolean("apply")&&now-changedAt>=2000&&pending==null&&!observe) {
@@ -430,7 +431,7 @@ public final class Bridge implements SensorEventListener {
                 }
             }else clearOverride();
             bridgeError="";
-            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&now-changedAt>5000&&luxSource.equals("front")&&!PollCadence.changed(lux,(float)result.optDouble("lux",-1));
+            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&now-changedAt>5000&&luxSource.equals("front")&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
             pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)

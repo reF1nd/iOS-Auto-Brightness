@@ -110,3 +110,17 @@ with tempfile.TemporaryDirectory() as state:
     assert s['apply'] and abs(s['target'] - 0.049192) < 1e-8, s
     p.stdin.close();assert p.wait(timeout=5) == 0
 print('Direct-coordinate preference survives hold expiry and process restart')
+
+# A shaded front sensor must neither lower output nor write a learning point.
+with tempfile.TemporaryDirectory() as state:
+    p = start();ask(p, 'USER 0')
+    ask(p, 'FRAME2 1000 1 1 9.3 114 0 34 67 0 0.08925 0.001 0.4 0 12')
+    ask(p, 'EVENT 400000 9.3 0.08925')
+    ask(p, 'FRAME2 40000 1 1 9.3 114 0 34 67 0 0.08925 0.001 0.4 0 12')
+    for now in range(40250,100000,250):
+        s = ask(p, f'FRAME2 {now} 1 1 1.825 89 0 34 67 0 0.08925 0.001 0.4 0 12')
+        assert s['ambient_guard'] and abs(s['target'] - 0.08925) < 1e-8, s
+    assert ask(p, 'EVENT 410000 1.825 0.04')['accepted'] is False
+    assert len(ask(p, 'STATUS')['points']) == 1
+    p.stdin.close();assert p.wait(timeout=5) == 0
+print('Ambient guard blocks dimming and learning across the process protocol')

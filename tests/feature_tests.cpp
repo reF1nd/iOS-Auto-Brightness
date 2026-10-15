@@ -42,9 +42,9 @@ int main(){try {
     check(dark.fastDark(),"consistent front and rear decrease enables fast dark transition");
     dark.reset();f=frame();dark.step(f);run(dark,f,20);double before=dark.smoothLux();
     f.lux=20;f.back=300;run(dark,f,8);
-    check(dark.smoothLux()==before&&!dark.fastDark()&&!dark.settled(),"brief front-only drop must be confirmed");
+    check(dark.smoothLux()==before&&!dark.fastDark()&&dark.ambientGuard(),"brief front-only drop is guarded");
     f.lux=100;run(dark,f,1);check(dark.smoothLux()==before,"recovered transient does not dim");
-    f.lux=20;run(dark,f,40);check(dark.smoothLux()<before&&!dark.fastDark(),"persistent disagreement fades without fast dark");
+    f.lux=20;run(dark,f,40);check(dark.smoothLux()==before&&!dark.fastDark(),"time alone cannot validate persistent disagreement");
 
     Controller hysteresis;hysteresis.profile=panel();hysteresis.config.hyst_low=.1;hysteresis.config.hyst_high=0;
     f=frame();f.current=.1;hysteresis.learning.add(100,.105,10);hysteresis.step(f);o=run(hysteresis,f,20);

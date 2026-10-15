@@ -65,18 +65,18 @@ async function refresh(load=false) {
     const s=await ctl('status');
     $('version').textContent=`KERNELSU · ${s.version??'v7'}`;
     $('status').replaceChildren();
-    for(const [label,value] of [['服务',s.bridge],['控制状态',s.reason],['模式',s.mode],['环境光',s.lux>=0?`${s.lux.toFixed(1)} lux`:'等待传感器'],['目标',s.target===undefined?'—':`${(s.target*100).toFixed(2)}%`],['实际亮度',s.current===undefined?'—':`${(s.current*100).toFixed(2)}%`],['系统滑块值',s.slider??'—'],['处理间隔',s.poll_ms===undefined?'—':`${s.poll_ms} ms`],['光感来源',s.lux_source??'—'],['当前系统上限',s.maximum===undefined?'—':`${(s.maximum*100).toFixed(1)}%`]]) {
+    for(const [label,value] of [['服务',s.bridge],['控制状态',s.ambient_guard?'位置变化保护':s.reason],['模式',s.mode],['环境光',s.lux>=0?`${s.lux.toFixed(1)} lux`:'等待传感器'],['目标',s.target===undefined?'—':`${(s.target*100).toFixed(2)}%`],['实际亮度',s.current===undefined?'—':`${(s.current*100).toFixed(2)}%`],['系统滑块值',s.slider??'—'],['处理间隔',s.poll_ms===undefined?'—':`${s.poll_ms} ms`],['光感来源',s.lux_source??'—'],['当前系统上限',s.maximum===undefined?'—':`${(s.maximum*100).toFixed(1)}%`]]) {
       const box=document.createElement('div');box.className='card';const l=document.createElement('span'),v=document.createElement('strong');l.textContent=label;v.textContent=value??'—';box.append(l,v);$('status').append(box);
     }
     $('learningState').textContent=`存储：${s.storage??'未知'} · 调节事件：${s.event_status??'等待'} · 用户序号：${s.user??'—'}`;
     $('points').replaceChildren();const table=document.createElement('table');
     for(const p of s.points??[]){const tr=document.createElement('tr');for(const value of [`${p.lux.toFixed(1)} lux`,`${(p.brightness*100).toFixed(2)}%`,new Date(p.time).toLocaleString()]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}$('points').append(table);
-    $('diagnostics').textContent=JSON.stringify({profile:s.profile,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
+    $('diagnostics').textContent=JSON.stringify({profile:s.profile,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms,cpu_bridge_percent:s.cpu_percent,front_lux:s.front_lux,back_lux:s.back_lux,back_lux_effective:s.back_lux_effective,back_sample_age_ms:s.back_sample_age_ms,lux_source:s.lux_source,fallback_status:s.fallback_status,poll_ms:s.poll_ms,alpha:s.alpha,fast_dark:s.fast_dark,ambient_guard:s.ambient_guard,night_scale:s.night_scale,legacy_gamma_compatibility_only:legacyGamma},null,2);
     chart(s.curve??[],s);
     $('curvePoint').textContent=`红点：当前实际输出 · 照度 ${s.lux>=0?s.lux.toFixed(2):'—'} lux · 系统设置 ${s.setting>=0?(s.setting*100).toFixed(2):'—'}%`;
     if($('liveLog').checked)$('log').textContent=await exec('tail -n 80 /data/adb/ios_auto_brightness/service.log');
     if(load&&!dirty)setConfig((await ctl('config-get')).data);
-    if(!busy)note(s.observation_only?'观察模式：记录学习，不控制屏幕。':'已连接。手动调节后，请确认学习状态为 saved。');
+    if(!busy)note(s.ambient_guard?'前后光感变化不一致：保持亮度，暂停学习。':s.observation_only?'观察模式：记录学习，不控制屏幕。':'已连接。手动调节后，请确认学习状态为 saved。');
   }catch(e){note(e.message);}finally{polling=false;}
 }
 async function action(fn) {
