@@ -146,3 +146,33 @@ jobs:
           name: android-framework-bridge
           path: build/bridge/bridge.jar
           if-no-files-found: error
+
+  package:
+    name: KernelSU module package
+    needs: [inspect, test, android, bridge]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: ios-auto-brightness-android-arm64
+          path: build/artifacts/core
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: android-framework-bridge
+          path: build/artifacts/bridge
+      - name: Check module scripts and WebUI syntax
+        run: |
+          shellcheck --severity=warning module/*.sh
+          node --check module/webroot/app.js
+      - name: Package and validate archive
+        run: python3 tools/package.py
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: kernelsu-module
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
