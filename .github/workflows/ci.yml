@@ -130,3 +130,19 @@ jobs:
           path: build/android/bin/ios_brightness_daemon*
           if-no-files-found: error
           retention-days: 14
+
+  bridge:
+    name: Android framework bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Compile framework bridge
+        run: bash tools/build-bridge.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: android-framework-bridge
+          path: build/bridge/bridge.jar
+          if-no-files-found: error
