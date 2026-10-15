@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  inspect:
+    name: Repository and workflow checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      has_core: ${{ steps.core.outputs.has_core }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check repository contents
+        run: |
+          for file in README.md LICENSE CONTRIBUTING.md docs/PLAN.md; do
+            test -s "$file"
+          done
+          if git ls-files -- '*.zip' '*.apk' '*.jks' '*.keystore' '*.img' | grep -q .; then
+            echo 'Reference packages, binary releases and signing material must not be tracked.' >&2
+            exit 1
+          fi
+          git diff --check
+      - name: Validate workflows with pinned actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tool_dir="$(mktemp -d)"
+          trap 'rm -rf "$tool_dir"' EXIT
+          curl --fail --location --retry 3 \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            --output "$tool_dir/$archive"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$tool_dir/$archive" | sha256sum --check
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir" actionlint
+          "$tool_dir/actionlint" -color
+      - name: Detect core implementation
+        id: core
+        run: |
+          if [[ -f CMakeLists.txt ]]; then
+            echo 'has_core=true' >> "$GITHUB_OUTPUT"
+            echo '### Native core: build and test enabled' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'has_core=false' >> "$GITHUB_OUTPUT"
+            {
+              echo '### Bootstrap only — native core not implemented'
+              echo 'Host tests and Android builds are skipped. No module has been built or tested.'
+              echo 'Adding the root CMakeLists.txt enables both jobs; see CONTRIBUTING.md.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  test:
+    name: Host core tests
+    needs: inspect
+    if: needs.inspect.outputs.has_core == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Configure test build
+        run: cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+      - name: Build tests
+        run: cmake --build build/host --parallel 2
+      - name: Run tests (empty test suite is an error)
+        run: ctest --test-dir build/host --output-on-failure --no-tests=error --output-junit test-results.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: host-test-results
+          path: build/host/test-results.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  android:
+    name: Android ARM64 build
+    needs: [inspect, test]
+    if: needs.inspect.outputs.has_core == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      NDK_VERSION: 27.2.12479018
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install pinned Android NDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"'
+      - name: Configure Android build
+        run: |
+          cmake -S . -B build/android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$NDK_VERSION/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$GITHUB_WORKSPACE/build/android/bin"
+      - name: Build Android core
+        run: cmake --build build/android --parallel 2
+      - name: Inspect Android binary
+        run: |
+          binary=build/android/bin/ios_brightness_daemon
+          test -s "$binary"
+          "$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h "$binary"
+          sha256sum "$binary" > "$binary.sha256"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ios-auto-brightness-android-arm64
+          path: build/android/bin/ios_brightness_daemon*
+          if-no-files-found: error
+          retention-days: 14

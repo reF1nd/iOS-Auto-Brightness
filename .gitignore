@@ -1,0 +1,30 @@
+# Local reference material and generated module packages
+*.zip
+*.apk
+*.aab
+*.img
+reference/
+private/
+
+# Native / Android build output
+build/
+dist/
+.cxx/
+.gradle/
+local.properties
+*.o
+*.a
+*.so
+
+# Local editor and operating-system state
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.pid
+
+# Signing material
+*.jks
+*.keystore
+*.pem
+*.key
