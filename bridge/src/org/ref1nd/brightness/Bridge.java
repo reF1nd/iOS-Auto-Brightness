@@ -432,7 +432,7 @@ public final class Bridge implements SensorEventListener {
             Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
             if(info==null)throw new IOException("brightness limits unavailable");
             float minimum=number(info,"brightnessMinimum"),maximum=number(info,"brightnessMaximum"),current=number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness");
-            boolean blocked=windowBlocked(info,now)||integer(info,"highBrightnessMode")==2;
+            boolean blocked=(automatic&&on&&windowBlocked(info,now))||integer(info,"highBrightnessMode")==2;
             thermal(now);
             if(power.getCurrentThermalStatus()>=PowerManager.THERMAL_STATUS_SEVERE)temperature=Math.max(temperature,46);
             // On-change light sensors may be silent while stable; registration stays active.

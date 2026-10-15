@@ -148,7 +148,7 @@ async function save(text) {
 $('save').onclick=()=>action(async()=>{if(rawInvalid)throw new Error('请先修复原始配置格式');for(const [key] of fields){const i=$(key);if(!i.checkValidity())throw new Error(`请检查 ${key}`);}await save($('config').value);});
 $('saveRaw').onclick=()=>action(()=>save($('config').value));
 $('refresh').onclick=()=>refresh(true);
-$('defaults').onclick=()=>action(async()=>{setConfig(await exec(`cat ${quote(`${root}/default.conf`)}`));dirty=true;note('已载入默认值，点击保存并应用后生效。');});
+$('defaults').onclick=()=>action(async()=>{dirty=true;setConfig(await exec(`cat ${quote(`${root}/default.conf`)}`));note('已载入默认值，点击保存并应用后生效。');});
 $('clear').onclick=()=>{if(confirm('清除当前用户的全部学习记录？基础曲线保持不变。'))action(async()=>{await ctl('learn-clear');await refresh();note('学习记录已清除并保存。');});};
 $('export').onclick=()=>action(async()=>{const data=(await ctl('learn-export')).data;const url=URL.createObjectURL(new Blob([data],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download='ios-brightness-learning.dat';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);note('已导出当前用户学习数据。');});
 $('import').onchange=()=>action(async()=>{const file=$('import').files[0];if(!file)return;if(file.size>32768)throw new Error('导入文件过大');await ctl('learn-import',base64(await file.text()));$('import').value='';await refresh();note('学习数据已验证并导入。');});
