@@ -64,7 +64,8 @@ int main(){
         check(noTemp.reason=="auto_boost_unavailable"&&noTemp.value<=f.maximum,"unknown temperature blocks boost");
         f.temp=46;f.now+=1000;check(c.step(f).reason=="auto_boost_unavailable","hot blocks boost");
         f.temp=35;f.battery=20;f.now+=1000;check(c.step(f).reason=="auto_boost_unavailable","low battery blocks boost");
-        f.battery=80;f.now+=1000;check(c.step(f).reason=="sunlight","safe strong light permits boost");
+        f.battery=80;f.now+=1000;check(c.step(f).reason!="sunlight","strong light needs repeated confirmation");
+        f.now+=250;check(c.step(f).reason=="sunlight","confirmed safe strong light permits boost");
         f.maximum=.05;f.now+=1000;check(c.step(f).value<=.05,"system cap takes effect immediately");
         {
             Controller dark;dark.profile=p;

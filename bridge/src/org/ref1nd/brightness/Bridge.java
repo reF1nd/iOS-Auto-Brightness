@@ -2,6 +2,9 @@
 package org.ref1nd.brightness;
 
 import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.AttributionSource;
 import android.database.ContentObserver;
 import android.hardware.Sensor;
@@ -52,17 +55,27 @@ public final class Bridge implements SensorEventListener {
     final LocalServerSocket server;
     final float[] profileNits, profileBacklight;
     final String displayId;
+    final String version;
     JSONObject result=new JSONObject();
     Sensor front, back, proximity;
     float frontLux=-1;
-    final LightReading backReading=new LightReading();
+    final LightReading backReading=new LightReading(), frontReading=new LightReading();
+    final PollCadence cadence=new PollCadence();
+    final Runnable tickTask=this::tick;
+    final AtomicBoolean fallbackBusy=new AtomicBoolean();
+    LuxFallback.Sample fallbackSample;
+    long sensorSession=0, lastSensorRetry=0, lastFallbackRequest=-10000;
+    volatile long heartbeat=SystemClock.elapsedRealtime(), nextTickAt=0;
+    int pollMs=250;
+    String luxSource="unavailable", fallbackStatus="idle";
     boolean near=false, registered=false, overridden=false, eligible=false;
     int user=-1;
     long userSerial=-1, lastEvent=System.currentTimeMillis(), frontAt=0, pendingAt=0;
-    long changedAt=-10000, heartbeat=SystemClock.elapsedRealtime(), lastFrame=0, lastThermal=0, lastStatus=0;
+    long changedAt=-10000, lastFrame=0, lastThermal=0, lastStatus=0;
     long started=SystemClock.elapsedRealtime(), lastConfigCheck=0;
     String configText="";
-    float temperature=-1, lastWrite=-1;
+    float temperature=-1, lastWrite=-1, lastLoggedTarget=-1;
+    long lastDecisionLog=0;
     int battery=-1;
     boolean charging=false;
     JSONObject pending;
@@ -107,6 +120,7 @@ public final class Bridge implements SensorEventListener {
     }
     Bridge(Context c,File mod,File dir,boolean observation) throws Exception {
         context=c;module=mod;state=dir;observe=observation;
+        version=read(new File(module,"module.prop"),4096).replaceAll("(?s).*?\\nversion=([^\\n]+).*", "$1");
         if(!dir.isDirectory())throw new IOException("state directory not prepared");
         display=(DisplayManager)c.getSystemService(Context.DISPLAY_SERVICE);
         global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
@@ -126,7 +140,7 @@ public final class Bridge implements SensorEventListener {
         power=(PowerManager)c.getSystemService(Context.POWER_SERVICE);
         front=sensors.getDefaultSensor(Sensor.TYPE_LIGHT);proximity=sensors.getDefaultSensor(Sensor.TYPE_PROXIMITY);
         for(Sensor s:sensors.getSensorList(Sensor.TYPE_ALL))if(s.getStringType().contains("back_lux")&&!s.isWakeUpSensor()){back=s;break;}
-        if(front==null)throw new IOException("No front light sensor");
+        // Missing or failed primary sensors can use the independently registered rear/fallback source.
         // Binding the abstract socket is also the bridge singleton guard.
         server=new LocalServerSocket(SOCKET);
         Process launched=null;
@@ -170,43 +184,112 @@ public final class Bridge implements SensorEventListener {
         ContentObserver observer=new ContentObserver(handler) {
             @Override public void onChange(boolean selfChange) {
                 if(closing.get())return;
-                changedAt=SystemClock.elapsedRealtime();
+                changedAt=SystemClock.elapsedRealtime();wake();
                 try{request("HOLD "+changedAt);clearOverride();}catch(Exception e){bridgeError=e.toString();}
             }
         };
         Method register=context.getContentResolver().getClass().getMethod("registerContentObserver",android.net.Uri.class,boolean.class,ContentObserver.class,int.class);
         for(String key:new String[]{Settings.System.SCREEN_BRIGHTNESS,Settings.System.SCREEN_BRIGHTNESS_MODE,"screen_auto_brightness_adj"})register.invoke(context.getContentResolver(),Settings.System.getUriFor(key),false,observer,-1);
+        display.registerDisplayListener(new DisplayManager.DisplayListener() {
+            public void onDisplayAdded(int id) {if(id==0)wake();}
+            public void onDisplayRemoved(int id) {if(id==0)wake();}
+            public void onDisplayChanged(int id) {if(id==0)wake();}
+        },handler);
+        IntentFilter filter=new IntentFilter();
+        for(String action:new String[]{Intent.ACTION_SCREEN_ON,Intent.ACTION_SCREEN_OFF,Intent.ACTION_BATTERY_CHANGED,Intent.ACTION_TIME_CHANGED,Intent.ACTION_TIMEZONE_CHANGED})filter.addAction(action);
+        try{context.registerReceiver(new BroadcastReceiver(){public void onReceive(Context c,Intent i){if(Intent.ACTION_TIMEZONE_CHANGED.equals(i.getAction()))TimeZone.setDefault(null);wake();}},filter);}
+        catch(Exception e){System.err.println("broadcast listener unavailable: "+rootCause(e));}
         new Thread(this::serve,"iab-control").start();
         Thread watchdog=new Thread(()->{
             while(!closing.get()) {
                 SystemClock.sleep(1000);
-                if(SystemClock.elapsedRealtime()-heartbeat>5000) {
+                if(SystemClock.elapsedRealtime()-Math.max(heartbeat,nextTickAt)>5000) {
                     System.err.println("Bridge heartbeat expired; releasing display");
                     try { if(!observe)release(display); } catch(Exception ignored) {}
                     core.destroy();System.exit(1);
                 }
             }
         },"iab-watchdog");watchdog.setDaemon(true);watchdog.start();
-        handler.post(this::tick);
+        handler.post(tickTask);
     }
     void clearOverride() throws Exception {
         if(overridden&&!observe){release(display);overridden=false;lastWrite=-1;}
     }
+    void wake() {
+        if(closing.get())return;
+        // All calls are delivered on the main handler, including sensor events.
+        cadence.reset();handler.removeCallbacks(tickTask);handler.postDelayed(tickTask,50);
+    }
+    void registerLight(Sensor sensor,LightReading reading,int period) {
+        if(sensor!=null)sensors.unregisterListener(this,sensor);
+        boolean ok=sensor!=null&&sensors.registerListener(this,sensor,period,handler);
+        reading.registration(ok,sensor!=null&&sensor.getReportingMode()==Sensor.REPORTING_MODE_ON_CHANGE);
+    }
     void registerSensors(boolean wanted) {
         if(wanted==registered)return;
+        sensorSession=SystemClock.elapsedRealtime();fallbackSample=null;cadence.reset();
+        frontLux=-1;frontAt=0;near=false;
         if(wanted) {
-            registered=sensors.registerListener(this,front,250000,handler);
-            boolean backRegistered=registered&&back!=null&&sensors.registerListener(this,back,500000,handler);
-            backReading.registration(backRegistered,back!=null&&back.getReportingMode()==Sensor.REPORTING_MODE_ON_CHANGE);
-            if(registered&&proximity!=null)sensors.registerListener(this,proximity,SensorManager.SENSOR_DELAY_NORMAL,handler);
-            sensorStatus=registered?front.getName():"registration_failed";
-        }else{sensors.unregisterListener(this);registered=false;frontLux=-1;backReading.registration(false,false);frontAt=0;near=false;sensorStatus="suspended";}
+            registerLight(front,frontReading,250000);registerLight(back,backReading,500000);
+            if(proximity!=null)sensors.registerListener(this,proximity,SensorManager.SENSOR_DELAY_NORMAL,handler);
+            lastSensorRetry=sensorSession;
+            sensorStatus=frontReading.isRegistered()?front.getName():"front_unavailable";
+        }else {
+            sensors.unregisterListener(this);frontReading.registration(false,false);backReading.registration(false,false);
+            sensorStatus="suspended";fallbackStatus="idle";
+        }
+        registered=wanted;
+    }
+    void retrySensors(long now) {
+        if(!registered||now-lastSensorRetry<30000)return;
+        lastSensorRetry=now;
+        if(!frontReading.isRegistered() || (front!=null&&front.getReportingMode()!=Sensor.REPORTING_MODE_ON_CHANGE&&frontReading.effective(now)<0)) {
+            registerLight(front,frontReading,250000);frontLux=-1;frontAt=0;
+            sensorStatus=frontReading.isRegistered()?front.getName():"front_unavailable";
+        }
+        if(!backReading.isRegistered() || (back!=null&&back.getReportingMode()!=Sensor.REPORTING_MODE_ON_CHANGE&&backReading.effective(now)<0))registerLight(back,backReading,500000);
+    }
+    void requestFallback(long now) {
+        if(!registered||now-lastFallbackRequest<2000||!fallbackBusy.compareAndSet(false,true))return;
+        lastFallbackRequest=now;final long session=sensorSession;
+        fallbackStatus="reading";
+        new Thread(()->{
+            LuxFallback.Sample found=null;String status="unavailable";
+            try {
+                List<File> candidates=LuxFallback.candidates(new File("/sys/class/sensors"),new File("/sys/bus/iio/devices"));
+                if(candidates.size()==1) {
+                    File path=candidates.get(0);float lux=LuxFallback.parseLux(read(path,128));
+                    if(LuxFallback.valid(lux))found=new LuxFallback.Sample(lux,SystemClock.elapsedRealtime(),"sysfs:"+path.getPath());
+                } else if(candidates.size()>1)status="ambiguous_sysfs";
+                if(found==null&&front!=null) {
+                    Process dump=new ProcessBuilder("/system/bin/dumpsys","sensorservice").redirectErrorStream(true).start();
+                    Thread timeout=new Thread(()->{SystemClock.sleep(2000);if(dump.isAlive())dump.destroyForcibly();},"iab-fallback-timeout");timeout.setDaemon(true);timeout.start();
+                    try(Reader reader=new InputStreamReader(dump.getInputStream(),StandardCharsets.UTF_8)) {
+                        StringBuilder body=new StringBuilder();char[] buf=new char[4096];int count;
+                        while((count=reader.read(buf))>0){body.append(buf,0,count);if(body.length()>2000000)throw new IOException("sensor dump too large");}
+                        if(dump.waitFor()==0)found=LuxFallback.fromDump(body.toString(),front.getName(),SystemClock.elapsedRealtime(),session);
+                    }finally{if(dump.isAlive())dump.destroyForcibly();}
+                }
+                if(found!=null)status=found.source;
+            }catch(Exception e){status="unavailable: "+rootCause(e);}
+            final LuxFallback.Sample sample=found;final String detail=status;
+            handler.post(()->{
+                fallbackBusy.set(false);
+                if(!closing.get()&&registered&&sensorSession==session) {
+                    fallbackSample=sample;fallbackStatus=detail;
+                    if(sample!=null)wake();
+                }
+            });
+        },"iab-lux-fallback").start();
     }
     @Override public void onSensorChanged(SensorEvent e) {
+        if(!registered||e.values.length==0)return;
         float v=e.values[0];if(!Float.isFinite(v)||v<0)return;
-        if(e.sensor==front){frontLux=v;frontAt=SystemClock.elapsedRealtime();}
-        else if(e.sensor==back){backReading.update(v,SystemClock.elapsedRealtime());}
-        else if(e.sensor==proximity)near=v<Math.min(5,proximity.getMaximumRange());
+        boolean changed=false;
+        if(e.sensor==front){changed=PollCadence.changed(v,frontLux);frontLux=v;frontAt=SystemClock.elapsedRealtime();frontReading.update(v,frontAt);}
+        else if(e.sensor==back){changed=!LuxFallback.valid(frontReading.effective(SystemClock.elapsedRealtime()))&&PollCadence.changed(v,backReading.raw());backReading.update(v,SystemClock.elapsedRealtime());}
+        else if(e.sensor==proximity){boolean value=v<Math.min(5,proximity.getMaximumRange());changed=near!=value;near=value;}
+        if(changed)wake();
     }
     @Override public void onAccuracyChanged(Sensor s,int accuracy) {}
     int activeUser() throws Exception {return (Integer)Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);}
@@ -214,7 +297,7 @@ public final class Bridge implements SensorEventListener {
         UserHandle handle=(UserHandle)UserHandle.class.getMethod("of",int.class).invoke(null,id);
         return ((UserManager)context.getSystemService(Context.USER_SERVICE)).getSerialNumberForUser(handle);
     }
-    int mode(int uid) throws Exception {
+    String systemSetting(int uid,String key) throws Exception {
         // app_process is not an AMS-registered application. Use the external
         // provider API for privileged clients; never parse settings XML/ABX.
         Object am=Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null);
@@ -225,11 +308,13 @@ public final class Bridge implements SensorEventListener {
             Object provider=holder.getClass().getField("provider").get(holder);
             Bundle extras=new Bundle();extras.putInt("_user",uid);
             AttributionSource source=new AttributionSource.Builder(android.os.Process.myUid()).build();
-            Bundle values=(Bundle)call(provider,"call",new Class<?>[]{AttributionSource.class,String.class,String.class,String.class,Bundle.class},source,"settings","GET_system",Settings.System.SCREEN_BRIGHTNESS_MODE,extras);
-            if(values==null)return -1;
-            String value=values.getString("value");
-            return value==null?-1:Integer.parseInt(value);
+            Bundle values=(Bundle)call(provider,"call",new Class<?>[]{AttributionSource.class,String.class,String.class,String.class,Bundle.class},source,"settings","GET_system",key,extras);
+            return values==null?null:values.getString("value");
         }finally{call(am,"removeContentProviderExternalAsUser",new Class<?>[]{String.class,IBinder.class,int.class},"settings",token,0);}
+    }
+    int mode(int uid) throws Exception {
+        String value=systemSetting(uid,Settings.System.SCREEN_BRIGHTNESS_MODE);
+        return value==null?-1:Integer.parseInt(value);
     }
     void thermal(long now) {
         if(now-lastThermal<2000)return;lastThermal=now;
@@ -295,11 +380,7 @@ public final class Bridge implements SensorEventListener {
             // HyperOS can report STATE_ON while an AOD pulse is still dozing.
             Display main=display.getDisplay(0);boolean on=main!=null&&main.getState()==Display.STATE_ON&&power.isInteractive();
             registerSensors(automatic&&on);
-            if(registered&&front.getReportingMode()!=Sensor.REPORTING_MODE_ON_CHANGE&&frontAt>0&&now-frontAt>30000) {
-                // A continuous sensor must keep reporting. Silence from an
-                // on-change sensor means the value is unchanged, not stale.
-                registerSensors(false);registerSensors(automatic&&on);frontAt=0;
-            }
+            retrySensors(now);
             if(now-lastConfigCheck>=2000) {
                 lastConfigCheck=now;
                 String fresh=read(new File(state,"config.conf"),32768);
@@ -314,10 +395,12 @@ public final class Bridge implements SensorEventListener {
             boolean blocked=flag(info,"isBrightnessOverrideByWindow")||integer(info,"highBrightnessMode")==2;
             thermal(now);
             // On-change light sensors may be silent while stable; registration stays active.
-            float lux=registered&&frontAt>=started?frontLux:-1;
-            float backLux=backReading.effective(now);
-            eligible=automatic&&on&&!blocked&&!near&&lux>=0;
-            result=request(String.format(Locale.ROOT,"FRAME %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0));
+            float primary=frontReading.effective(now), backLux=backReading.effective(now);
+            if(registered&&!LuxFallback.valid(primary)&&!LuxFallback.valid(backLux))requestFallback(now);
+            LuxFallback.Sample selected=LuxFallback.select(primary,backLux,fallbackSample,now,sensorSession);
+            float lux=registered?selected.lux:-1;luxSource=registered?selected.source:"suspended";
+            eligible=automatic&&on&&!blocked&&!near&&lux>=0&&luxSource.equals("front");
+            result=request(String.format(Locale.ROOT,"FRAME2 %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d %d",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0,Calendar.getInstance().get(Calendar.HOUR_OF_DAY)));
             if(!automatic||!on){pending=null;lastEvent=System.currentTimeMillis();}
             else if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
             if(result.optBoolean("apply")&&now-changedAt>=2000&&pending==null&&!observe) {
@@ -328,27 +411,39 @@ public final class Bridge implements SensorEventListener {
                 }
             }else clearOverride();
             bridgeError="";
+            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&now-changedAt>5000&&luxSource.equals("front")&&!PollCadence.changed(lux,(float)result.optDouble("lux",-1));
+            pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
-                .put("last_event_rejection",lastEventRejection)
+                .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)
+                .put("poll_ms",pollMs).put("front_registered",frontReading.isRegistered()).put("front_sample_age_ms",frontReading.age(now))
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
                 .put("front_lux",frontLux).put("back_lux",backReading.raw()).put("back_lux_effective",backLux)
                 .put("back_sample_age_ms",backReading.age(now)).put("back_registered",backReading.isRegistered())
                 .put("back_reporting_mode",back==null?-1:back.getReportingMode())
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
-                .put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
+                .put("slider",systemSetting(user,Settings.System.SCREEN_BRIGHTNESS)).put("version",version).put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
             String reason=result.optString("reason");
-            if(!reason.equals(previousReason)){System.out.println("state="+reason+" storage="+result.optString("storage"));previousReason=reason;}
+            float target=(float)result.optDouble("target",-1);
+            boolean significant=lastLoggedTarget<0||Math.abs(target-lastLoggedTarget)>Math.max(.0005f,Math.abs(lastLoggedTarget)*.08f);
+            if(!reason.equals(previousReason)||(significant&&now-lastDecisionLog>=1000)) {
+                System.out.println(String.format(Locale.ROOT,"time=%tFT%<tT%<tz state=%s source=%s front=%.3f rear=%.3f smooth=%.3f target=%.7f current=%.7f cap=%.7f temp=%.1f battery=%d poll=%d storage=%s",new Date(),reason,luxSource,primary,backLux,result.optDouble("lux",-1),target,current,maximum,temperature,battery,pollMs,result.optString("storage")));
+                previousReason=reason;lastLoggedTarget=target;lastDecisionLog=now;
+            }
             if(now-lastStatus>=1000){replace(new File(state,"status.json"),result.toString());lastStatus=now;}
         }catch(Exception e) {
             String error=rootCause(e);if(!error.equals(bridgeError))System.err.println("bridge: "+error);bridgeError=error;
             try{clearOverride();}catch(Exception ignored){}
             try{result=new JSONObject().put("ok",false).put("bridge","degraded").put("error",bridgeError).put("heartbeat_ms",now);replace(new File(state,"status.json"),result.toString());}catch(Exception ignored){}
             if(!core.isAlive()) {shutdown();System.exit(1);}
-        }finally{heartbeat=SystemClock.elapsedRealtime();if(!closing.get())handler.postDelayed(this::tick,registered?250:1000);}
+        }finally{heartbeat=SystemClock.elapsedRealtime();if(!closing.get()){nextTickAt=heartbeat+pollMs;handler.removeCallbacks(tickTask);handler.postDelayed(tickTask,pollMs);}}
     }
     JSONObject control(String line) throws Exception {
         String[] parts=line.split(" ",2);String cmd=parts[0];
         if(cmd.equals("status"))return new JSONObject(result.toString());
+        if(cmd.equals("log-clear")) {
+            try(FileOutputStream out=new FileOutputStream(new File(state,"service.log"),false)){out.getFD().sync();}
+            return new JSONObject().put("ok",true);
+        }
         if(cmd.equals("config-get"))return request("CONFIG_GET");
         if(cmd.equals("learn-export"))return request("EXPORT");
         if(cmd.equals("learn-clear")){pending=null;return request("CLEAR");}
@@ -360,7 +455,7 @@ public final class Bridge implements SensorEventListener {
             File temp=File.createTempFile(".request-",".tmp",state);
             try {try(FileOutputStream out=new FileOutputStream(temp)){out.write(decoded);out.getFD().sync();}
                 JSONObject reply=request((cmd.equals("config-set")?"CONFIG ":"IMPORT ")+JSONObject.quote(temp.getPath()));
-                pending=null;return reply;
+                pending=null;wake();return reply;
             }finally{temp.delete();}
         }
         throw new IOException("unsupported command");

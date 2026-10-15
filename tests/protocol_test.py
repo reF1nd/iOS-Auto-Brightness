@@ -69,3 +69,24 @@ with tempfile.TemporaryDirectory() as state:
     p.stdin.close()
     assert p.wait(timeout=5) == 0
 print('Persistence, crash recovery, user isolation, single instance and config rejection passed')
+
+# First-install migration validates before creating the durable v7 configuration.
+with tempfile.TemporaryDirectory() as state:
+    with open(os.path.join(state, 'legacy-config.conf'), 'w') as f:
+        f.write('manual_gamma=2.6\nalpha_fast=0.55\nhyst_low=0.04\n')
+    p = subprocess.Popen([exe, state, profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    s = ask(p, 'USER 0')
+    assert s['config_status'] == 'migrated_legacy', s
+    data = ask(p, 'CONFIG_GET')['data']
+    assert 'manual_gamma=2.6' in data and 'alpha_fast=0.55' in data
+    s = ask(p, 'FRAME2 1000 1 1 100 100 0 35 80 0 0.1 0.001 0.4 0 23')
+    assert s['night_scale'] == 0.95
+    p.stdin.write('FRAME2 2000 1 1 100 100 0 35 80 0 0.1 0.001 0.4 0 24\n');p.stdin.flush()
+    assert not json.loads(p.stdout.readline())['ok']
+    p.stdin.close();assert p.wait(timeout=5) == 0
+    with open(os.path.join(state, 'legacy-config.conf'), 'w') as f:
+        f.write('alpha_fast=nan\n')
+    p = subprocess.Popen([exe, state, profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert 'alpha_fast=0.55' in ask(p, 'CONFIG_GET')['data']  # Existing v7 config wins.
+    p.stdin.close();assert p.wait(timeout=5) == 0
+print('Legacy tuning migration and local-time frame validation passed')

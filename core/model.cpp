@@ -48,12 +48,14 @@ Config Config::parse(const std::string& text) {
     take("alpha_fast",c.alpha_fast,.01,.9); take("alpha_mid",c.alpha_mid,.01,.9); take("alpha_slow",c.alpha_slow,.001,.9);
     take("fast_threshold",c.fast_threshold,.1,5); take("slow_threshold",c.slow_threshold,.001,.5);
     take("spike_up",c.spike_up,2,50); take("spike_down",c.spike_down,.001,.5);
+    take("manual_gamma",c.manual_gamma,1.2,3.5);
     take("hyst_low",c.hyst_low,0,.2); take("hyst_high",c.hyst_high,0,.2);
     take("high_lux_threshold",c.high_lux_threshold,5000,100000);
     take("high_lux_boost_max",c.high_lux_boost_max,0,1); take("high_lux_min_pct",c.high_lux_min_pct,0,1);
     integer("high_lux_duration_ms",c.high_lux_duration_ms,1000,20000);
     integer("user_hold_ms",c.user_hold_ms,2000,30000);
     integer("log_max_bytes",c.log_max_bytes,65536,8388608); integer("log_max_backups",c.log_max_backups,1,8);
+    boolean("night_enabled",c.night_enabled); boolean("low_battery_enabled",c.low_battery_enabled);
     boolean("learning_enabled",c.learning_enabled); boolean("enabled",c.enabled);
     if(!values.empty()) throw std::runtime_error("unknown key: "+values.begin()->first);
     if(c.alpha_slow>c.alpha_mid||c.alpha_mid>c.alpha_fast||c.slow_threshold>=c.fast_threshold) throw std::runtime_error("inconsistent response thresholds");
@@ -62,7 +64,7 @@ Config Config::parse(const std::string& text) {
 std::string Config::serialize() const {
     std::ostringstream s; s<<std::setprecision(9);
 #define FIELD(x) s<<#x<<'='<<x<<'\n'
-    FIELD(enabled);FIELD(learning_enabled);FIELD(alpha_fast);FIELD(alpha_mid);FIELD(alpha_slow);
+    FIELD(enabled);FIELD(learning_enabled);FIELD(night_enabled);FIELD(low_battery_enabled);FIELD(manual_gamma);FIELD(alpha_fast);FIELD(alpha_mid);FIELD(alpha_slow);
     FIELD(fast_threshold);FIELD(slow_threshold);FIELD(spike_up);FIELD(spike_down);FIELD(hyst_low);FIELD(hyst_high);
     FIELD(high_lux_threshold);FIELD(high_lux_boost_max);FIELD(high_lux_min_pct);FIELD(high_lux_duration_ms);
     FIELD(user_hold_ms);FIELD(log_max_bytes);FIELD(log_max_backups);
@@ -105,8 +107,8 @@ void Learning::add(double lux,double value,int64_t time) {
     // The latest explicit adjustment takes precedence; constrain conflicting neighbours.
     for(auto& p:points) {if(p.lux<lux)p.value=std::min(p.value,value); if(p.lux>lux)p.value=std::max(p.value,value);}
 }
-double Learning::target(double lux,const Profile& p) const {
-    const auto base=[&](double l){return std::clamp(p.toBrightness(baseNits(l))+legacy_offset,0.0,1.0);};
+double Learning::target(double lux,const Profile& p,double baseScale) const {
+    const auto base=[&](double l){return std::clamp((p.toBrightness(baseNits(l))+legacy_offset)*baseScale,0.0,1.0);};
     if(points.empty()) return base(lux);
     std::vector<double> xs,ys;
     const double left=std::max(0.0,std::expm1(std::log1p(points.front().lux)-std::log(10.0)));
@@ -119,8 +121,17 @@ double Learning::target(double lux,const Profile& p) const {
     if(xs.size()==1) return ys.front();
     return interpolate(std::log1p(lux),xs,ys);
 }
-void Controller::reset() {frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;high_until_=0;candidate_since_=0;wake_until_=0;}
-void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;}
+double Controller::nightScale() const {
+    return config.night_enabled && frame_.local_hour>=0 && frame_.local_hour<24 &&
+        (frame_.local_hour>=18 || frame_.local_hour<6) ? .95 : 1;
+}
+void Controller::reset() {
+    frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
+    candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;dark_pending_=false;dark_since_=-1;
+    high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;alpha_=0;desired_=0;
+    sunlight_target_=0;ramp_from_=0;ramp_target_=-1;ramp_at_=0;ramp_duration_=0;fast_until_=0;
+}
+void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
 bool Controller::learn(double lux,double value,int64_t time) {
     if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
@@ -131,7 +142,7 @@ Output Controller::step(const Frame& f) {
     const bool waking=f.automatic&&f.screen&&(!frame_.automatic||!frame_.screen);
     if(waking){reset();wake_until_=f.now+2000;}
     frame_=f;
-    auto release=[&](const char* reason){output_=-1;return Output{false,0,reason};};
+    auto release=[&](const char* reason){output_=-1;ramp_duration_=0;ramp_target_=-1;return Output{false,0,reason};};
     if(!config.enabled) return release("disabled");
     if(!f.automatic) {reset();return release("manual_or_unknown");}
     if(!f.screen) {reset();return release("screen_off");}
@@ -142,41 +153,92 @@ Output Controller::step(const Frame& f) {
     double lux=f.lux;
     // A covered rear sensor is normal on a desk. It can extend spike
     // confirmation, but must never cap a stable front-light measurement.
-    double dt=last_?std::clamp((f.now-last_)/1000.0,.01,2.0):.25;last_=f.now;
+    double dt=last_?std::clamp((f.now-last_)/1000.0,.01,8.0):.25;last_=f.now;
+    // A local front-sensor obstruction need not mean the room became dark.
+    // Confirm disagreement before reducing brightness; never accelerate that drop.
+    bool rearBright=std::isfinite(f.back)&&f.back>=0&&f.back>std::max(lux*4,20.0);
+    dark_pending_=false;
+    if(smooth_>=1 && lux<smooth_*.65 && rearBright) {
+        if(dark_since_<0)dark_since_=f.now;
+        dark_pending_=f.now-dark_since_<3000;
+    } else dark_since_=-1;
+    if(dark_pending_)lux=smooth_;
+    trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
+    if(trend_.size()>=3) {
+        const size_t n=trend_.size();const double first=trend_[n-3],middle=trend_[n-2];
+        if(!rearBright && first>middle && middle>lux && (first-lux)/std::max(first,.01)>.35)
+            fast_until_=f.now+800;
+    }
+    fast_dark_=!rearBright&&f.now<fast_until_;
     if(smooth_<0) smooth_=lux;
     else {
         double ratio=(lux+1)/(smooth_+1);
         if(ratio>config.spike_up||ratio<config.spike_down) {
             if(candidate_<0||std::abs(std::log1p(candidate_)-std::log1p(lux))>.4) {candidate_=lux;candidate_since_=f.now;}
             const bool rearDisagrees=ratio>config.spike_up&&std::isfinite(f.back)&&f.back>=0&&f.back<lux/config.spike_up;
-            if(f.now-candidate_since_<(rearDisagrees?1500:750)) lux=smooth_;
+            if(!fast_dark_ && f.now-candidate_since_<(rearDisagrees?1500:750)) lux=smooth_;
         } else candidate_=-1;
         double diff=std::abs(lux-smooth_)/std::max(smooth_,1.0);
-        double a=diff>=config.fast_threshold?config.alpha_fast:(diff<=config.slow_threshold?config.alpha_slow:config.alpha_mid);
-        smooth_+=(1-std::pow(1-a,dt/.25))*(lux-smooth_);
+        double blend=std::clamp((diff-config.slow_threshold)/(config.fast_threshold-config.slow_threshold),0.0,1.0);
+        alpha_=diff<=config.slow_threshold?config.alpha_slow:config.alpha_mid+blend*(config.alpha_fast-config.alpha_mid);
+        if(trend_.size()==5) {
+            double slope=0;for(size_t i=0;i<5;i++)slope+=(static_cast<double>(i)-2)*trend_[i];
+            if(std::abs(slope/10)>50)alpha_=std::max(alpha_,.3);
+        }
+        if(fast_dark_)alpha_=std::max(alpha_,.7);
+        smooth_+=(1-std::pow(1-alpha_,dt/.25))*(lux-smooth_);
     }
     if(f.now<hold_until_) return release("user_adjustment");
     // Let the display leave AOD and the light sensor settle before seeding
     // the output from current brightness. Never start a ramp from doze level.
     if(f.now<wake_until_) return release("wake_settling");
-    double target=learning.target(smooth_,profile);
+    // Explicit learned points take precedence over the time-of-day default.
+    double target=learning.target(smooth_,profile,nightScale());
     const bool safe=std::isfinite(f.temp)&&f.temp>=0&&f.temp<=45&&f.battery>=0&&(f.battery>=30||f.charging);
-    if(safe&&smooth_>=config.high_lux_threshold) high_until_=f.now+config.high_lux_duration_ms;
-    if(!safe) high_until_=0;
-    bool sunlight=safe&&high_until_>f.now;
-    if(sunlight) {
-        const double boost=std::clamp((smooth_-config.high_lux_threshold)/config.high_lux_threshold,0.0,1.0)*config.high_lux_boost_max;
-        target=std::max(target*(1+boost),f.maximum*config.high_lux_min_pct);
+    if(!safe) {sunlight_=false;high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;}
+    else if(!sunlight_) {
+        if(smooth_>=config.high_lux_threshold) {
+            if(last_high_confirm_<0 || f.now-last_high_confirm_>=250) {
+                last_high_confirm_=f.now;++high_confirm_;
+                if(high_confirm_>=2){sunlight_=true;high_exit_at_=-1;}
+            }
+        } else {high_confirm_=0;last_high_confirm_=-1;}
     }
-    target=std::clamp(target,f.minimum,f.maximum);
-    if(output_<0) output_=std::clamp(f.current,f.minimum,f.maximum);
-    double hysteresis=target>output_?config.hyst_high:config.hyst_low;
-    if(std::abs(target-output_)>std::max(.00001,output_*hysteresis)) {
-        const double a=1-std::exp(-dt/(target>output_?.45:1.2));
-        output_+=a*(target-output_);
+    if(sunlight_) {
+        if(smooth_>=config.high_lux_threshold) {
+            high_exit_at_=-1;
+            double boost=std::clamp((smooth_-config.high_lux_threshold)/config.high_lux_threshold,0.0,1.0)*config.high_lux_boost_max;
+            sunlight_target_=std::max(target*(1+boost),f.maximum*config.high_lux_min_pct);
+        } else if(smooth_<config.high_lux_threshold*.7) {
+            if(high_exit_at_<0)high_exit_at_=f.now;
+            if(f.now-high_exit_at_>=config.high_lux_duration_ms){sunlight_=false;high_confirm_=0;last_high_confirm_=-1;}
+        } else high_exit_at_=-1;
+        if(sunlight_)target=sunlight_target_;
     }
-    output_=std::clamp(output_,f.minimum,f.maximum);
-    return {true,output_,sunlight?"sunlight":(!safe?"auto_boost_unavailable":"auto")};
+    // Normalized 1.0 is the panel maximum; do not multiply the system cap by .7.
+    bool lowBattery=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging;
+    double cap=lowBattery?std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
+    target=std::clamp(target,f.minimum,cap);
+    if(output_<0)output_=std::clamp(f.current,f.minimum,cap);
+    // low/high refer to brightness level, not the direction of the change.
+    double hysteresis=config.hyst_low+(config.hyst_high-config.hyst_low)*std::clamp(output_,0.0,1.0);
+    bool changed=std::abs(target-output_)>std::max(.00001,output_*hysteresis);
+    if(changed) {
+        bool reverse=ramp_target_>=0 && (target-output_)*(ramp_target_-output_)<0;
+        if(ramp_duration_==0 || reverse || (fast_dark_&&ramp_duration_>200)) {
+            ramp_from_=output_;ramp_at_=f.now-static_cast<int64_t>(dt*1000);
+            double distance=std::abs(target-output_);
+            ramp_duration_=rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))));
+        }
+        ramp_target_=target;
+        double t=std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
+        double eased=t<.5?4*t*t*t:1-std::pow(-2*t+2,3)/2;
+        output_=ramp_from_+(ramp_target_-ramp_from_)*eased;
+        if(t>=1)ramp_duration_=0;
+        desired_=target;
+    } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;}
+    output_=std::clamp(output_,f.minimum,cap);
+    return {true,output_,lowBattery?"low_battery_limit":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto")))};
 }
 std::string jsonString(const std::string& s) {
     std::ostringstream o;o<<'"';for(unsigned char c:s) {switch(c){case '"':o<<"\\\"";break;case '\\':o<<"\\\\";break;case '\n':o<<"\\n";break;case '\r':o<<"\\r";break;case '\t':o<<"\\t";break;default:if(c<32)o<<"\\u"<<std::hex<<std::setw(4)<<std::setfill('0')<<static_cast<int>(c)<<std::dec;else o<<c;}}o<<'"';return o.str();

@@ -2,12 +2,12 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>iOS Auto Brightness</title><link rel="stylesheet" href="style.css"></head>
 <body><main>
-<header><p>KERNELSU · v7</p><h1>iOS Auto Brightness</h1><p>让亮度记住你的偏好</p></header>
+<header><p id="version">KERNELSU · v7</p><h1>iOS Auto Brightness</h1><p>让亮度记住你的偏好</p></header>
 <div id="notice" role="status">正在连接服务…</div>
 <section><h2>运行状态</h2><div id="status" class="cards"></div><button id="refresh">刷新状态</button></section>
-<section><h2>亮度曲线</h2><p>蓝色：基础曲线 · 橙色：学习曲线。纵轴为面板亮度比例，最终输出受系统上限限制。</p><svg id="chart" viewBox="0 0 600 220" role="img" aria-label="基础及学习亮度曲线"></svg></section>
+<section><h2>亮度曲线</h2><p>蓝色：基础曲线 · 橙色：学习曲线。纵轴为面板亮度比例，最终输出受系统上限限制。</p><p id="curvePoint"></p><svg id="chart" viewBox="0 0 600 220" role="img" aria-label="基础及学习亮度曲线"></svg></section>
 <section><h2>学习记录</h2><p id="learningState"></p><div id="points"></div><div class="buttons"><button id="export">导出学习数据</button><label class="button">导入<input id="import" type="file" accept=".dat,text/plain" hidden></label><button id="clear" class="danger">清除当前用户学习</button></div></section>
-<section><h2>调光设置</h2><div id="controls"></div><button id="save">保存并应用</button><button id="defaults">载入默认设置</button><details><summary>原始配置</summary><textarea id="config" spellcheck="false" aria-label="原始配置"></textarea><button id="saveRaw">保存原始配置</button></details></section>
-<section><h2>诊断</h2><pre id="diagnostics"></pre><button id="logs">读取最近日志</button><pre id="log"></pre></section>
+<section><h2>调光设置</h2><div id="controls"></div><button id="save">保存并应用</button><button id="defaults">载入默认设置</button><label class="button">导入配置（含 v6）<input id="configImport" type="file" accept=".conf,text/plain" hidden></label><p>夜间修正作用于默认曲线，明确学习点优先。低电量限亮始终服从系统上限。旧版 Gamma 仅保留为兼容信息，学习使用系统实际亮度。</p><details><summary>原始配置</summary><textarea id="config" spellcheck="false" aria-label="原始配置"></textarea><button id="saveRaw">保存原始配置</button></details></section>
+<section><h2>诊断</h2><pre id="diagnostics"></pre><button id="logs">读取最近日志</button><button id="clearLog" class="danger">清空当前日志</button><label><input id="liveLog" type="checkbox"> 自动刷新日志</label><pre id="log"></pre></section>
 <footer><a href="https://github.com/reF1nd/iOS-Auto-Brightness" target="_blank" rel="noopener noreferrer">源码 · GPL-3.0</a><p>主屏适配：小米 17 Pro Max / HyperOS 4。系统手动模式下释放控制。</p></footer>
 </main><script type="module" src="app.js"></script></body></html>

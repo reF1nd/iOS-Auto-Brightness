@@ -8,7 +8,14 @@ STATE=/data/adb/ios_auto_brightness
 mkdir -p "$STATE"
 chmod 700 "$STATE"
 # Preserve an existing v7 config. Legacy offset migration never invents samples.
-[ -f "$STATE/config.conf" ] || cp "$MODPATH/default.conf" "$STATE/config.conf"
+if [ ! -f "$STATE/config.conf" ]; then
+  if [ -f /data/local/tmp/ios_brightness.conf ] && [ ! -L /data/local/tmp/ios_brightness.conf ]; then
+    cp /data/local/tmp/ios_brightness.conf "$STATE/legacy-config.conf"
+    ui_print 'Legacy tuning will be validated and imported by the core at startup.'
+  else
+    cp "$MODPATH/default.conf" "$STATE/config.conf"
+  fi
+fi
 if [ ! -e "$STATE/legacy-offset.dat" ] && [ -f /data/local/tmp/ios_brightness_learn ] && [ ! -L /data/local/tmp/ios_brightness_learn ]; then
   cp /data/local/tmp/ios_brightness_learn "$STATE/legacy-offset.dat"
 fi

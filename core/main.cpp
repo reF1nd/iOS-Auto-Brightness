@@ -22,15 +22,21 @@ int main(int argc,char**argv) {
         Controller core;core.profile=Profile::parse(readFile(argv[2]));
         const std::string conf=dir+"/config.conf";std::string configStatus="default",saveStatus="waiting_for_user";
         if(access(conf.c_str(),F_OK)==0) {try{core.config=Config::parse(readFile(conf));configStatus="loaded";}catch(const std::exception&e){core.config.enabled=false;configStatus=std::string("invalid: ")+e.what();}}
-        else atomicWrite(conf,core.config.serialize());
+        else {
+            try {
+                core.config=Config::parse(readFile(dir+"/legacy-config.conf"));
+                configStatus="migrated_legacy";
+            }catch(const std::exception& e) {configStatus=access((dir+"/legacy-config.conf").c_str(),F_OK)==0?std::string("legacy_rejected: ")+e.what():"default";}
+            atomicWrite(conf,core.config.serialize());
+        }
         Store store{dir,core.profile.id,0};bool hasUser=false;Output last;
         std::cout<<std::setprecision(10);
         std::string line;
         auto status=[&]() {
-            std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"points\":[";
+            std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"settled\":"<<(core.settled()?"true":"false")<<",\"fast_dark\":"<<(core.fastDark()?"true":"false")<<",\"alpha\":"<<core.alpha()<<",\"desired\":"<<core.desired()<<",\"night_scale\":"<<core.nightScale()<<",\"points\":[";
             bool comma=false;for(auto&p:core.learning.points){if(comma)o<<',';comma=true;o<<"{\"lux\":"<<p.lux<<",\"brightness\":"<<p.value<<",\"time\":"<<p.time<<'}';}
             o<<"],\"curve\":[";
-            for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.profile.toBrightness(baseNits(lux))<<','<<core.learning.target(lux,core.profile)<<']';}
+            for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.profile.toBrightness(baseNits(lux))<<','<<core.learning.target(lux,core.profile,core.nightScale())<<']';}
             o<<"]}";return o.str();
         };
         while(std::getline(std::cin,line)) {
@@ -41,8 +47,10 @@ int main(int argc,char**argv) {
                 if(cmd=="USER") {
                     int64_t user=-1;if(!(in>>user)||user<0)throw std::runtime_error("invalid user");end();
                     if(!hasUser||store.user!=user){store.user=user;hasUser=true;core.reset();core.learning=store.load(saveStatus);last={false,0,"user_changed"};}
-                } else if(cmd=="FRAME") {
-                    Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");end();
+                } else if(cmd=="FRAME"||cmd=="FRAME2") {
+                    Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");
+                    if(cmd=="FRAME2"&&(!(in>>f.local_hour)||f.local_hour<0||f.local_hour>23))throw std::runtime_error("invalid local hour");
+                    end();
                     if(!hasUser)throw std::runtime_error("user required");
                     last=core.step(f);
                 } else if(cmd=="HOLD") {int64_t now;if(!(in>>now))throw std::runtime_error("missing time");end();core.hold(now);last={false,0,"user_adjustment"};

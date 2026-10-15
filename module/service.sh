@@ -41,7 +41,9 @@ for id in autobrightness LiveDisplay lux-brightness adaptive-brightness brightne
     exit 1
   fi
 done
-[ -f "$STATE/config.conf" ] || cp "$MODDIR/default.conf" "$STATE/config.conf"
+if [ ! -f "$STATE/config.conf" ] && [ ! -f "$STATE/legacy-config.conf" ]; then
+  cp "$MODDIR/default.conf" "$STATE/config.conf"
+fi
 # stop is session-scoped: a deliberate reboot may restart an enabled module.
 rm -f "$STATE/stop"
 rotate() {
