@@ -52,7 +52,7 @@ public:
 private:
     Frame frame_;
     double smooth_=-1, output_=-1, candidate_=-1;
-    int64_t last_=0, hold_until_=0, high_until_=0, candidate_since_=0;
+    int64_t last_=0, hold_until_=0, high_until_=0, candidate_since_=0, wake_until_=0;
 };
 std::string jsonString(const std::string& s);
 }

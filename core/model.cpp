@@ -119,7 +119,7 @@ double Learning::target(double lux,const Profile& p) const {
     if(xs.size()==1) return ys.front();
     return interpolate(std::log1p(lux),xs,ys);
 }
-void Controller::reset() {smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;high_until_=0;candidate_since_=0;}
+void Controller::reset() {frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;high_until_=0;candidate_since_=0;wake_until_=0;}
 void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;}
 bool Controller::learn(double lux,double value,int64_t time) {
     if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||smooth_<0||frame_.lux<0) return false;
@@ -128,6 +128,8 @@ bool Controller::learn(double lux,double value,int64_t time) {
     learning.add(lux,value,time);hold(frame_.now);return true;
 }
 Output Controller::step(const Frame& f) {
+    const bool waking=f.automatic&&f.screen&&(!frame_.automatic||!frame_.screen);
+    if(waking){reset();wake_until_=f.now+2000;}
     frame_=f;
     auto release=[&](const char* reason){output_=-1;return Output{false,0,reason};};
     if(!config.enabled) return release("disabled");
@@ -154,6 +156,9 @@ Output Controller::step(const Frame& f) {
         smooth_+=(1-std::pow(1-a,dt/.25))*(lux-smooth_);
     }
     if(f.now<hold_until_) return release("user_adjustment");
+    // Let the display leave AOD and the light sensor settle before seeding
+    // the output from current brightness. Never start a ramp from doze level.
+    if(f.now<wake_until_) return release("wake_settling");
     double target=learning.target(smooth_,profile);
     const bool safe=std::isfinite(f.temp)&&f.temp>=0&&f.temp<=45&&f.battery>=0&&(f.battery>=30||f.charging);
     if(safe&&smooth_>=config.high_lux_threshold) high_until_=f.now+config.high_lux_duration_ms;

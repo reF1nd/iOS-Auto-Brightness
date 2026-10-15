@@ -52,6 +52,20 @@ with tempfile.TemporaryDirectory() as state:
     with open(imported, 'w') as f:
         f.write(exported)
     assert len(ask(p, 'IMPORT ' + json.dumps(imported))['points']) == 1
+    ask(p, 'USER 1')
+    ask(p, 'USER 0')
+    ask(p, 'FRAME 10000 1 1 0 0 0 35 80 0 0.009 0.001 0.4 0')
+    assert ask(p, 'EVENT 200000 0 0.009')['storage'] == 'saved'
+    p.kill()
+    p.wait(timeout=5)
+    p = start()
+    s = ask(p, 'USER 0')
+    assert s['points'][0]['lux'] == 0 and s['points'][0]['brightness'] == 0.009
+    ask(p, 'FRAME 20000 1 0 -1 -1 0 35 80 0 0.001 0.001 0.4 0')
+    s = ask(p, 'FRAME 50000 1 1 0 0 0 35 80 0 0.001 0.001 0.4 0')
+    assert not s['apply'] and s['reason'] == 'wake_settling'
+    s = ask(p, 'FRAME 52250 1 1 0 0 0 35 80 0 0.009 0.001 0.4 0')
+    assert s['apply'] and abs(s['target'] - 0.009) < 1e-9
     p.stdin.close()
     assert p.wait(timeout=5) == 0
 print('Persistence, crash recovery, user isolation, single instance and config rejection passed')

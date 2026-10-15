@@ -61,7 +61,7 @@ async function refresh(load=false) {
     $('learningState').textContent=`存储：${s.storage??'未知'} · 调节事件：${s.event_status??'等待'} · 用户序号：${s.user??'—'}`;
     $('points').replaceChildren();const table=document.createElement('table');
     for(const p of s.points??[]){const tr=document.createElement('tr');for(const value of [`${p.lux.toFixed(1)} lux`,`${(p.brightness*100).toFixed(2)}%`,new Date(p.time).toLocaleString()]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}$('points').append(table);
-    $('diagnostics').textContent=JSON.stringify({profile:s.profile,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,uptime_ms:s.uptime_ms},null,2);
+    $('diagnostics').textContent=JSON.stringify({profile:s.profile,sensor:s.sensor,back_sensor:s.back_sensor,proximity_sensor:s.proximity_sensor,temperature:s.temperature,battery:s.battery,observation_only:s.observation_only,config_status:s.config_status,last_event_rejection:s.last_event_rejection,events_dropped:s.events_dropped,uptime_ms:s.uptime_ms},null,2);
     chart(s.curve??[]);
     if(load&&!dirty)setConfig((await ctl('config-get')).data);
     if(!busy)note(s.observation_only?'观察模式：记录学习，不控制屏幕。':'已连接。手动调节后，请确认学习状态为 saved。');

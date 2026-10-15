@@ -14,6 +14,15 @@ public final class EventGateTest {
         check(!event(11500,0,"main",new float[]{10},100,false));
         check(!EventGate.accept(11500,10000,12000,0,0,"main","main",new float[]{1,50},new long[]{10900,11000},100,1,false,true));
         check(!EventGate.accept(11500,10000,12000,0,0,"main","main",new float[]{10},new long[]{11000},100,.5f,false,true));
+        // Stable darkness produces one on-change sample, not continuous zeros.
+        check(EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{0},new long[]{14425},8.8f,1,false,true));
+        check(EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{12},new long[]{14425},30,1,false,true));
+        check(!EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{0},new long[]{4999},8.8f,1,false,true));
+        // A value preceding the two-second window still contributes until it changes.
+        check(!EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{0,50},new long[]{15000,19500},30,1,false,true));
+        check(EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{50,0},new long[]{14000,17000},8.8f,1,false,true));
+        check(!EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{0,0},new long[]{19000,18000},8.8f,1,false,true));
+        check(!EventGate.accept(20000,19000,20500,0,0,"main","main",new float[]{0},new long[]{22000},8.8f,1,false,true));
         System.out.println("Framework user-event filtering passed");
     }
 }

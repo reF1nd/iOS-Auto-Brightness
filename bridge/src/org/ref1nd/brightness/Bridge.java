@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -41,6 +42,7 @@ public final class Bridge implements SensorEventListener {
     final DisplayManager display;
     final Object global;
     final SensorManager sensors;
+    final PowerManager power;
     final File module, state;
     final boolean observe;
     final Process core;
@@ -63,7 +65,7 @@ public final class Bridge implements SensorEventListener {
     int battery=-1;
     boolean charging=false;
     JSONObject pending;
-    String eventStatus="waiting", sensorStatus="waiting", previousReason="", bridgeError="";
+    String eventStatus="waiting", sensorStatus="waiting", previousReason="", bridgeError="", lastEventRejection="";
     int dropped=0;
     List<File> thermalFiles=new ArrayList<>();
 
@@ -120,6 +122,7 @@ public final class Bridge implements SensorEventListener {
         profileNits=new float[n];profileBacklight=new float[n];for(int i=0;i<n;i++){profileNits[i]=scan.nextFloat();profileBacklight[i]=scan.nextFloat();}scan.close();
         validatePanel();
         sensors=(SensorManager)c.getSystemService(Context.SENSOR_SERVICE);
+        power=(PowerManager)c.getSystemService(Context.POWER_SERVICE);
         front=sensors.getDefaultSensor(Sensor.TYPE_LIGHT);proximity=sensors.getDefaultSensor(Sensor.TYPE_PROXIMITY);
         for(Sensor s:sensors.getSensorList(Sensor.TYPE_ALL))if(s.getStringType().contains("back_lux")&&!s.isWakeUpSensor()){back=s;break;}
         if(front==null)throw new IOException("No front light sensor");
@@ -192,10 +195,10 @@ public final class Bridge implements SensorEventListener {
         if(wanted==registered)return;
         if(wanted) {
             registered=sensors.registerListener(this,front,250000,handler);
-            if(back!=null)sensors.registerListener(this,back,500000,handler);
-            if(proximity!=null)sensors.registerListener(this,proximity,SensorManager.SENSOR_DELAY_NORMAL,handler);
+            if(registered&&back!=null)sensors.registerListener(this,back,500000,handler);
+            if(registered&&proximity!=null)sensors.registerListener(this,proximity,SensorManager.SENSOR_DELAY_NORMAL,handler);
             sensorStatus=registered?front.getName():"registration_failed";
-        }else{sensors.unregisterListener(this);registered=false;frontLux=-1;backLux=-1;near=false;sensorStatus="suspended";}
+        }else{sensors.unregisterListener(this);registered=false;frontLux=-1;backLux=-1;frontAt=0;backAt=0;near=false;sensorStatus="suspended";}
     }
     @Override public void onSensorChanged(SensorEvent e) {
         float v=e.values[0];if(!Float.isFinite(v)||v<0)return;
@@ -250,9 +253,10 @@ public final class Bridge implements SensorEventListener {
                 if(ts<=since)continue;
                 float[] lux=(float[])e.getClass().getField("luxValues").get(e);
                 long[] samples=(long[])e.getClass().getField("luxTimestamps").get(e);
-                if(EventGate.accept(ts,since,System.currentTimeMillis(),integer(e,"userId"),user,string(e,"uniqueDisplayId"),displayId,lux,samples,number(e,"brightness"),number(e,"powerBrightnessFactor"),flag(e,"reduceBrightColors"),canLearn)) {
+                String rejection=EventGate.rejection(ts,since,System.currentTimeMillis(),integer(e,"userId"),user,string(e,"uniqueDisplayId"),displayId,lux,samples,number(e,"brightness"),number(e,"powerBrightnessFactor"),flag(e,"reduceBrightColors"),canLearn);
+                if(rejection.isEmpty()) {
                     if(newest==null||ts>time(newest,"timeStamp"))newest=e;
-                }else dropped++;
+                }else {dropped++;lastEventRejection=rejection;}
             }
             lastEvent=max;
             if(newest!=null) {
@@ -286,10 +290,12 @@ public final class Bridge implements SensorEventListener {
                 if(user==0&&result.optString("storage").equals("new")&&legacy.isFile())result=request("MIGRATE "+JSONObject.quote(legacy.getPath()));
             }
             boolean automatic=mode(user)==1;
-            Display main=display.getDisplay(0);boolean on=main!=null&&main.getState()==Display.STATE_ON;
+            // HyperOS can report STATE_ON while an AOD pulse is still dozing.
+            Display main=display.getDisplay(0);boolean on=main!=null&&main.getState()==Display.STATE_ON&&power.isInteractive();
             registerSensors(automatic&&on);
-            if(registered&&frontAt>0&&now-frontAt>30000) {
-                // Request a fresh initial event from on-change sensors instead of using stale data forever.
+            if(registered&&front.getReportingMode()!=Sensor.REPORTING_MODE_ON_CHANGE&&frontAt>0&&now-frontAt>30000) {
+                // A continuous sensor must keep reporting. Silence from an
+                // on-change sensor means the value is unchanged, not stale.
                 registerSensors(false);registerSensors(automatic&&on);frontAt=0;
             }
             if(now-lastConfigCheck>=2000) {
@@ -320,6 +326,7 @@ public final class Bridge implements SensorEventListener {
             }else clearOverride();
             bridgeError="";
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
+                .put("last_event_rejection",lastEventRejection)
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
                 .put("front_lux",frontLux).put("back_lux",backLux)
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)

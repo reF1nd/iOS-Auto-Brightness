@@ -42,6 +42,8 @@ int main(){
         check(l.points.size()<=32,"sample count bounded");
         Controller c;c.profile=p;
         Frame f;f.now=1000;f.automatic=true;f.screen=true;f.lux=100;f.current=.1;f.minimum=.001;f.maximum=.4;f.battery=80;f.temp=35;
+        check(c.step(f).reason=="wake_settling","wake holds control while display and sensor settle");
+        f.now+=2000;
         check(c.step(f).apply,"valid auto frame controls display");
         f.back=0;f.now+=250;c.step(f);
         check(c.smoothLux()==100,"covered rear sensor must not darken a stable front sensor");
@@ -58,12 +60,29 @@ int main(){
         f.screen=true;f.blocked=true;check(!c.step(f).apply,"window override respected");
         f.blocked=false;f.near=true;check(!c.step(f).apply,"proximity releases control");
         f.near=false;f.lux=-1;check(!c.step(f).apply,"invalid sensor releases control");
-        c.reset();f.lux=50000;f.temp=-1;f.now+=1000;auto noTemp=c.step(f);
+        c.reset();f.lux=50000;f.temp=-1;f.now+=1000;c.step(f);f.now+=2000;auto noTemp=c.step(f);
         check(noTemp.reason=="auto_boost_unavailable"&&noTemp.value<=f.maximum,"unknown temperature blocks boost");
         f.temp=46;f.now+=1000;check(c.step(f).reason=="auto_boost_unavailable","hot blocks boost");
         f.temp=35;f.battery=20;f.now+=1000;check(c.step(f).reason=="auto_boost_unavailable","low battery blocks boost");
         f.battery=80;f.now+=1000;check(c.step(f).reason=="sunlight","safe strong light permits boost");
         f.maximum=.05;f.now+=1000;check(c.step(f).value<=.05,"system cap takes effect immediately");
+        {
+            Controller dark;dark.profile=p;
+            Frame night=f;night.lux=0;night.current=.009;night.now=1000;
+            dark.step(night);
+            check(dark.learn(0,.009,20000),"zero-lux manual preference is learnable");
+            night.now+=6000;
+            check(std::abs(dark.step(night).value-.009)<1e-12,"dark preference controls the display");
+            night.screen=false;night.current=.001;night.now+=1000;
+            check(!dark.step(night).apply,"sleep releases even with a learned preference");
+            night.screen=true;night.now+=30000;
+            check(!dark.step(night).apply,"doze brightness must not seed an immediate wake ramp");
+            night.now+=250;night.current=.009;
+            check(!dark.step(night).apply,"wake grace remains while system restores user brightness");
+            night.now+=2000;
+            check(std::abs(dark.step(night).value-.009)<1e-12,"wake preserves the exact zero-lux preference");
+            check(dark.learning.points.size()==1,"sleep and wake never invent or delete preferences");
+        }
         char tmp[]="/tmp/iab-tests-XXXXXX";char* d=mkdtemp(tmp);check(d,"temporary directory");
         std::string dir=d;Store store{dir,"test",0};std::string status;
         check(store.load(status).points.empty()&&status=="new","first boot");
