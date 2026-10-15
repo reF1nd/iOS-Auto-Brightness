@@ -162,9 +162,46 @@ jobs:
           path: build/bridge/bridge.jar
           if-no-files-found: error
 
+  emulator:
+    name: Android ${{ matrix.api }} runtime smoke
+    needs: [android, bridge]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [31, 35]
+    env:
+      EMULATOR_API: ${{ matrix.api }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: ios-auto-brightness-android-x86_64
+          path: build/artifacts/core
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: android-framework-bridge
+          path: build/artifacts/bridge
+      - name: Enable emulator acceleration
+        run: sudo chmod a+rw /dev/kvm
+      - name: Start bridge in observation mode on stock Android
+        run: bash tools/emulator-smoke.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: emulator-${{ matrix.api }}-diagnostics
+          path: |
+            build/smoke-*.json
+            build/smoke-*.log
+            build/emulator.log
+          if-no-files-found: warn
+
   package:
     name: Root module package
-    needs: [inspect, test, android, bridge]
+    needs: [inspect, test, android, bridge, emulator]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
