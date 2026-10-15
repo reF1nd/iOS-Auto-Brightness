@@ -12,6 +12,18 @@
 #include <unistd.h>
 using namespace brightness;
 int main(int argc,char**argv) {
+    if(argc==4 && std::string(argv[1])=="--config") {
+        try {
+            const auto text=std::string(argv[3]);
+            if(std::string(argv[2])=="check") std::cout<<Config::parse(readFile(text)).serialize();
+            else if(std::string(argv[2])=="save") {
+                std::ostringstream input;input<<std::cin.rdbuf();
+                if(input.str().size()>32768)throw std::runtime_error("config too large");
+                atomicWrite(text,Config::parse(input.str()).serialize());
+            } else return 2;
+            return 0;
+        }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}
+    }
     if(argc!=3){std::cerr<<"usage: ios_brightness_daemon STATE_DIRECTORY PROFILE\n";return 2;}
     umask(0077);
     try {
@@ -35,7 +47,7 @@ int main(int argc,char**argv) {
         auto status=[&]() {
             std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"settled\":"<<(core.settled()?"true":"false")<<",\"ambient_guard\":"<<(core.ambientGuard()?"true":"false")<<",\"fast_dark\":"<<(core.fastDark()?"true":"false")<<",\"alpha\":"<<core.alpha()<<",\"desired\":"<<core.desired()<<",\"night_scale\":"<<core.nightScale()<<",\"points\":[";
             bool comma=false;for(auto&p:core.learning.points){if(comma)o<<',';comma=true;o<<"{\"lux\":"<<p.lux<<",\"brightness\":"<<p.value<<",\"time\":"<<p.time<<'}';}
-            o<<"],\"curve\":[";
+            o<<"],\"legacy_offset\":"<<core.learning.legacy_offset<<",\"local_hour\":"<<core.frame().local_hour<<",\"curve\":[";
             for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.profile.toBrightness(baseNits(lux))<<','<<core.learning.target(lux,core.profile,core.nightScale())<<']';}
             o<<"]}";return o.str();
         };

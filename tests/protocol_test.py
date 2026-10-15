@@ -124,3 +124,18 @@ with tempfile.TemporaryDirectory() as state:
     assert len(ask(p, 'STATUS')['points']) == 1
     p.stdin.close();assert p.wait(timeout=5) == 0
 print('Ambient guard blocks dimming and learning across the process protocol')
+
+# Recovery commands must work with no bridge, malformed config and absent profile.
+with tempfile.TemporaryDirectory() as state:
+    config = os.path.join(state, 'config.conf')
+    with open(config, 'w') as out:
+        out.write('broken input')
+    result = subprocess.run([exe, '--config', 'save', config], input='alpha_fast=0.6\n', text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    before = open(config).read()
+    assert 'alpha_fast=0.6' in before
+    assert os.stat(config).st_mode & 0o777 == 0o600
+    result = subprocess.run([exe, '--config', 'save', config], input='alpha_fast=9\n', text=True, capture_output=True)
+    assert result.returncode != 0 and open(config).read() == before
+    result = subprocess.run([exe, '--config', 'check', config], text=True, capture_output=True)
+    assert result.returncode == 0 and result.stdout == before

@@ -1,8 +1,15 @@
 #!/system/bin/sh
 # SPDX-License-Identifier: GPL-3.0-only
-[ "$KSU" = true ] || abort 'KernelSU is required for this build.'
-[ "$ARCH" = arm64 ] || abort 'This build requires ARM64.'
-[ "$(getprop ro.build.version.sdk)" -ge 37 ] || abort 'This build targets the Android 17 HyperOS display adapter.'
+[ "$(getprop ro.build.version.sdk)" -ge 31 ] || abort 'Android 12 or newer is required (display brightness capabilities are checked at runtime).'
+case "$ARCH" in
+  arm64) ABI=arm64-v8a ;;
+  arm) ABI=armeabi-v7a ;;
+  x64) ABI=x86_64 ;;
+  x86) ABI=x86 ;;
+  *) abort "Unsupported architecture: $ARCH" ;;
+esac
+cp "$MODPATH/bin/$ABI/ios_brightness_daemon" "$MODPATH/bin/ios_brightness_daemon" || abort 'Missing native binary'
+rm -rf "$MODPATH/bin/arm64-v8a" "$MODPATH/bin/armeabi-v7a" "$MODPATH/bin/x86_64" "$MODPATH/bin/x86"
 STATE=/data/adb/ios_auto_brightness
 [ ! -L "$STATE" ] || abort 'State directory must not be a symlink.'
 mkdir -p "$STATE"

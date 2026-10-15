@@ -30,7 +30,17 @@ public final class LuxFallback {
         return new Sample(-1,now,"unavailable");
     }
     public static Sample fromDump(String text, String sensorName, long now, long sessionStart) {
-        if(sensorName==null||sensorName.isEmpty())return null;
+        if(sensorName==null||sensorName.isEmpty()) {
+            String chosen=null;
+            for(String line:text.split("\\r?\\n")) {
+                int end=line.indexOf(": last ");if(end<=0||Character.isWhitespace(line.charAt(0)))continue;
+                String name=line.substring(0,end), lower=name.toLowerCase(java.util.Locale.ROOT);
+                if((lower.contains("light")||lower.contains("als"))&&!lower.contains("back")&&!lower.contains("rear")) {
+                    if(chosen!=null&&!chosen.equals(name))return null;chosen=name;
+                }
+            }
+            if(chosen==null)return null;sensorName=chosen;
+        }
         boolean section=false;Sample latest=null;
         Pattern row=Pattern.compile("^\\s*\\d+ \\(ts=([0-9]+(?:\\.[0-9]+)?), wall=[^)]*\\)\\s+([0-9.eE+\\-]+),?\\s*$");
         for(String line:text.split("\\r?\\n")) {

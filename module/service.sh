@@ -4,7 +4,11 @@
 # KernelSU ships BusyBox ash; also use it when this script is started via adb sh.
 if [ "${IAB_SHELL_READY:-}" != "$$" ]; then
   export IAB_SHELL_READY=$$ ASH_STANDALONE=1
-  exec /data/adb/ksu/bin/busybox sh "$0" "$@"
+  for bb in /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox /data/adb/magisk/busybox; do
+    [ ! -x "$bb" ] || exec "$bb" sh "$0" "$@"
+  done
+  echo 'Root manager BusyBox is required for the supervisor lock' >&2
+  exit 1
 fi
 MODDIR=${0%/*}
 STATE=/data/adb/ios_auto_brightness

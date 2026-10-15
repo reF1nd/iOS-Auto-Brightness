@@ -20,6 +20,8 @@ public final class AdapterPolicyTest {
         check(LuxFallback.fromDump(dump,"ALS",40000,15000)==null,"stale dump");
         check(LuxFallback.fromDump(dump,"ALS",20000,19800)==null,"dump predates registration");
         check(LuxFallback.fromDump(dump,"Missing",20000,0)==null,"no ambiguous match");
+        check(LuxFallback.fromDump(dump,null,20000,15000).lux==0,"discover front without Sensor object");
+        check(LuxFallback.fromDump(dump+"Other light: last 1 events\n",null,20000,15000)==null,"ambiguous sensor discovery rejected");
         Path root=Files.createTempDirectory("iab-sources");
         try {
             Path sensors=Files.createDirectories(root.resolve("sensors/als"));

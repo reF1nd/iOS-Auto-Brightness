@@ -1,3 +1,5 @@
+> 以下为原目标设备的历史适配记录。beta.7 起取消型号/分辨率硬限制，当前规则见 [兼容性说明](COMPATIBILITY.md)。
+
 # 目标设备适配
 
 初始读取日期：2026-10-15。设备由用户确认为小米 17 Pro Max，HyperOS OS4.0.2.0.XPBCNXM / Android 17（API 37），KernelSU。

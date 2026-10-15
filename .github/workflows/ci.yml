@@ -104,12 +104,16 @@ jobs:
           retention-days: 14
 
   android:
-    name: Android ARM64 build
+    name: Android ${{ matrix.abi }} build
     needs: [inspect, test]
     if: needs.inspect.outputs.has_core == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
     env:
+      ABI: ${{ matrix.abi }}
       NDK_VERSION: 27.2.12479018
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -121,7 +125,7 @@ jobs:
         run: |
           cmake -S . -B build/android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$NDK_VERSION/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_ABI="$ABI" \
             -DANDROID_PLATFORM=android-26 \
             -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
             -DCMAKE_BUILD_TYPE=Release \
@@ -137,7 +141,7 @@ jobs:
           sha256sum "$binary" > "$binary.sha256"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: ios-auto-brightness-android-arm64
+          name: ios-auto-brightness-android-${{ matrix.abi }}
           path: build/android/bin/ios_brightness_daemon*
           if-no-files-found: error
           retention-days: 14
@@ -159,7 +163,7 @@ jobs:
           if-no-files-found: error
 
   package:
-    name: KernelSU module package
+    name: Root module package
     needs: [inspect, test, android, bridge]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -169,7 +173,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: ios-auto-brightness-android-arm64
+          pattern: ios-auto-brightness-android-*
           path: build/artifacts/core
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:

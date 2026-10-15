@@ -15,7 +15,7 @@ import android.hardware.display.DisplayManager;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
-import android.os.Build;
+import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -35,7 +35,6 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.regex.*;
 
 /** Privileged adapter. The native core owns algorithms and durable state. */
 public final class Bridge implements SensorEventListener {
@@ -56,6 +55,8 @@ public final class Bridge implements SensorEventListener {
     final float[] profileNits, profileBacklight;
     final String displayId;
     final String version;
+    final boolean calibrated, learningAvailable;
+    String calibrationStatus;
     JSONObject result=new JSONObject();
     Sensor front, back, proximity;
     float frontLux=-1;
@@ -79,11 +80,15 @@ public final class Bridge implements SensorEventListener {
     float temperature=-1, lastWrite=-1, lastLoggedTarget=-1;
     long lastDecisionLog=0;
     int battery=-1;
-    boolean charging=false;
+    boolean charging=false, frameworkCharging=false;
+    int frameworkBattery=-1;
+    float batteryTemperature=-1;
     JSONObject pending;
     float lastLearningLux=-1, lastFrameworkLux=-1;
     String eventStatus="waiting", sensorStatus="waiting", previousReason="", bridgeError="", lastEventRejection="";
-    int dropped=0;
+    int dropped=0, windowState=-1;
+    long windowAt=-10000, windowRequested=-10000;
+    boolean windowBusy=false;
     List<File> thermalFiles=new ArrayList<>();
 
     static Object call(Object target,String name,Class<?>[] types,Object...args) throws Exception {
@@ -94,6 +99,7 @@ public final class Bridge implements SensorEventListener {
     static String string(Object o,String field) throws Exception {return (String)o.getClass().getField(field).get(o);}
     static long time(Object o,String field) throws Exception {return o.getClass().getField(field).getLong(o);}
     static boolean flag(Object o,String field) throws Exception {return o.getClass().getField(field).getBoolean(o);}
+    static boolean hasField(Object o,String field){try{o.getClass().getField(field);return true;}catch(Exception e){return false;}}
     static Context systemContext() throws Exception {
         Class<?> at=Class.forName("android.app.ActivityThread");
         Object thread=at.getMethod("systemMain").invoke(null);
@@ -129,33 +135,38 @@ public final class Bridge implements SensorEventListener {
         global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
         displayId=(String)call(display.getDisplay(0),"getUniqueId",new Class<?>[]{});
         Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
-        for(String f:new String[]{"brightness","adjustedBrightness","brightnessMinimum","brightnessMaximum"})number(info,f);
-        flag(info,"isBrightnessOverrideByWindow");
-        // Require the actual target-ROM interfaces before starting a controller.
+        for(String f:new String[]{"brightness","brightnessMinimum","brightnessMaximum"})number(info,f);
         display.getClass().getMethod("setTemporaryBrightness",int.class,float.class);
-        display.getClass().getMethod("getBrightnessEvents");
-        Scanner scan=new Scanner(read(new File(module,"profiles/altdb.profile"),8192));scan.useLocale(Locale.ROOT);
-        if(!scan.next().equals("IAB_PROFILE_V1"))throw new IOException("profile version");scan.next();int n=scan.nextInt();
-        if(n<2||n>256)throw new IOException("profile length");
-        profileNits=new float[n];profileBacklight=new float[n];for(int i=0;i<n;i++){profileNits[i]=scan.nextFloat();profileBacklight[i]=scan.nextFloat();}scan.close();
-        validatePanel();
+        boolean events=true;
+        try{display.getClass().getMethod("getBrightnessEvents");}catch(NoSuchMethodException e){events=false;}
+        PanelProfile profile;
+        try{profile=PanelProfile.fromDump(displayDump(),displayId);calibrationStatus="system_calibration";}
+        catch(Exception e){profile=PanelProfile.generic(displayId);calibrationStatus="generic_no_nits_learning: "+rootCause(e);}
+        calibrated=profile.calibrated;learningAvailable=events&&calibrated;
+        profileNits=profile.nits;profileBacklight=profile.brightness;
+        String profileName=profile.id;
+        // Preserve existing learning only when the complete measured mapping is identical.
+        if(calibrated&&profile.matches(read(new File(module,"profiles/altdb.profile"),8192)))profileName="altdb-main-hyperos4";
+        replace(new File(state,"active.profile"),profile.encode(profileName));
         sensors=(SensorManager)c.getSystemService(Context.SENSOR_SERVICE);
         power=(PowerManager)c.getSystemService(Context.POWER_SERVICE);
         front=sensors.getDefaultSensor(Sensor.TYPE_LIGHT);proximity=sensors.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-        for(Sensor s:sensors.getSensorList(Sensor.TYPE_ALL))if(s.getStringType().contains("back_lux")&&!s.isWakeUpSensor()){back=s;break;}
+        for(Sensor sensor:sensors.getSensorList(Sensor.TYPE_ALL)) {
+            String name=(sensor.getName()+" "+sensor.getStringType()).toLowerCase(Locale.ROOT);
+            if((name.contains("back")||name.contains("rear"))&&(name.contains("light")||name.contains("lux")||name.contains("als"))&&!sensor.isWakeUpSensor()){back=sensor;break;}
+        }
         // Missing or failed primary sensors can use the independently registered rear/fallback source.
         // Binding the abstract socket is also the bridge singleton guard.
         server=new LocalServerSocket(SOCKET);
         Process launched=null;
         try {
-            launched=new ProcessBuilder(new File(module,"bin/ios_brightness_daemon").getPath(),state.getPath(),new File(module,"profiles/altdb.profile").getPath()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
+            launched=new ProcessBuilder(new File(module,"bin/ios_brightness_daemon").getPath(),state.getPath(),new File(state,"active.profile").getPath()).redirectError(ProcessBuilder.Redirect.INHERIT).start();
             core=launched;coreIn=new BufferedWriter(new OutputStreamWriter(core.getOutputStream(),StandardCharsets.UTF_8));coreOut=new BufferedReader(new InputStreamReader(core.getInputStream(),StandardCharsets.UTF_8));
         }catch(Exception e){server.close();if(launched!=null)launched.destroy();throw e;}
     }
-    void validatePanel() throws Exception {
-        Display.Mode mode=display.getDisplay(0).getMode();
-        if(mode.getPhysicalWidth()!=1200||mode.getPhysicalHeight()!=2608)throw new IOException("Unsupported main-panel geometry");
-        Process dump=new ProcessBuilder("/system/bin/dumpsys","display").redirectErrorStream(true).start();
+    String displayDump() throws Exception {return serviceDump("display");}
+    String serviceDump(String service) throws Exception {
+        Process dump=new ProcessBuilder("/system/bin/dumpsys",service).redirectErrorStream(true).start();
         Thread timeout=new Thread(()->{SystemClock.sleep(5000);if(dump.isAlive())dump.destroyForcibly();},"iab-probe-timeout");timeout.setDaemon(true);timeout.start();
         StringBuilder body=new StringBuilder();
         try(Reader reader=new InputStreamReader(dump.getInputStream(),StandardCharsets.UTF_8)) {
@@ -163,19 +174,19 @@ public final class Bridge implements SensorEventListener {
             while((n=reader.read(b))>0){body.append(b,0,n);if(body.length()>2000000){dump.destroyForcibly();throw new IOException("display dump too large");}}
         }
         if(dump.waitFor()!=0)throw new IOException("display calibration probe failed");
-        String text=body.toString();
-        int start=text.indexOf("uniqueId=\""+displayId+"\"");
-        if(start<0)throw new IOException("main display calibration identity missing");
-        int end=text.indexOf("DisplayDeviceInfo{",start);
-        String segment=text.substring(start,end<0?text.length():end);
-        Matcher m=Pattern.compile("mBacklight=\\[([^\\]]+)\\], mNits=\\[([^\\]]+)\\]").matcher(segment);
-        if(!m.find())throw new IOException("main panel calibration unavailable");
-        String[] bs=m.group(1).split(","), ns=m.group(2).split(",");
-        if(bs.length!=profileBacklight.length||ns.length!=profileNits.length)throw new IOException("panel calibration changed");
-        for(int i=0;i<bs.length;i++) {
-            float b=Float.parseFloat(bs[i].trim()),n=Float.parseFloat(ns[i].trim());
-            if(!Float.isFinite(b)||!Float.isFinite(n)||Math.abs(b-profileBacklight[i])>.00001||Math.abs(n-profileNits[i])>.05)throw new IOException("panel calibration mismatch");
+        return body.toString();
+    }
+    boolean windowBlocked(Object info,long now) throws Exception {
+        if(hasField(info,"isBrightnessOverrideByWindow"))return flag(info,"isBrightnessOverrideByWindow");
+        if(!windowBusy&&now-windowRequested>=1000) {
+            windowBusy=true;windowRequested=now;
+            new Thread(()->{
+                int found=-1;try{found=WindowPolicy.parse(serviceDump("power"));}catch(Exception ignored){}
+                final int value=found;
+                handler.post(()->{boolean changed=windowState!=value;windowState=value;windowAt=SystemClock.elapsedRealtime();windowBusy=false;if(changed)wake();});
+            },"iab-window-status").start();
         }
+        return windowState!=0||now-windowAt>10000;
     }
     float toBacklight(float nits) {
         if(nits<=profileNits[0])return profileBacklight[0];
@@ -201,6 +212,12 @@ public final class Bridge implements SensorEventListener {
         IntentFilter filter=new IntentFilter();
         for(String action:new String[]{Intent.ACTION_SCREEN_ON,Intent.ACTION_SCREEN_OFF,Intent.ACTION_BATTERY_CHANGED,Intent.ACTION_TIME_CHANGED,Intent.ACTION_TIMEZONE_CHANGED})filter.addAction(action);
         try{context.registerReceiver(new BroadcastReceiver(){public void onReceive(Context c,Intent i){
+            if(Intent.ACTION_BATTERY_CHANGED.equals(i.getAction())) {
+                int level=i.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=i.getIntExtra(BatteryManager.EXTRA_SCALE,-1);
+                frameworkBattery=level>=0&&scale>0?Math.min(100,level*100/scale):-1;
+                frameworkCharging=i.getIntExtra(BatteryManager.EXTRA_PLUGGED,0)!=0;
+                int temp=i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,-1);batteryTemperature=temp>=0?temp/10f:-1;
+            }
             if(Intent.ACTION_TIMEZONE_CHANGED.equals(i.getAction()))TimeZone.setDefault(null);
             if(Intent.ACTION_TIME_CHANGED.equals(i.getAction())){learningLux.reset();pending=null;lastEvent=System.currentTimeMillis();}
             wake();
@@ -274,13 +291,13 @@ public final class Bridge implements SensorEventListener {
                     File path=candidates.get(0);float lux=LuxFallback.parseLux(read(path,128));
                     if(LuxFallback.valid(lux))found=new LuxFallback.Sample(lux,SystemClock.elapsedRealtime(),"sysfs:"+path.getPath());
                 } else if(candidates.size()>1)status="ambiguous_sysfs";
-                if(found==null&&front!=null) {
+                if(found==null) {
                     Process dump=new ProcessBuilder("/system/bin/dumpsys","sensorservice").redirectErrorStream(true).start();
                     Thread timeout=new Thread(()->{SystemClock.sleep(2000);if(dump.isAlive())dump.destroyForcibly();},"iab-fallback-timeout");timeout.setDaemon(true);timeout.start();
                     try(Reader reader=new InputStreamReader(dump.getInputStream(),StandardCharsets.UTF_8)) {
                         StringBuilder body=new StringBuilder();char[] buf=new char[4096];int count;
                         while((count=reader.read(buf))>0){body.append(buf,0,count);if(body.length()>2000000)throw new IOException("sensor dump too large");}
-                        if(dump.waitFor()==0)found=LuxFallback.fromDump(body.toString(),front.getName(),SystemClock.elapsedRealtime(),session);
+                        if(dump.waitFor()==0)found=LuxFallback.fromDump(body.toString(),front==null?null:front.getName(),SystemClock.elapsedRealtime(),session);
                     }finally{if(dump.isAlive())dump.destroyForcibly();}
                 }
                 if(found!=null)status=found.source;
@@ -331,21 +348,22 @@ public final class Bridge implements SensorEventListener {
     }
     void thermal(long now) {
         if(now-lastThermal<2000)return;lastThermal=now;
-        try{battery=Integer.parseInt(read(new File("/sys/class/power_supply/battery/capacity"),32).trim());}catch(Exception e){battery=-1;}
-        try{charging=read(new File("/sys/class/power_supply/battery/status"),32).trim().equals("Charging");}catch(Exception e){charging=false;}
+        try{battery=Integer.parseInt(read(new File("/sys/class/power_supply/battery/capacity"),32).trim());}catch(Exception e){battery=frameworkBattery;}
+        try{charging=read(new File("/sys/class/power_supply/battery/status"),32).trim().equals("Charging");}catch(Exception e){charging=frameworkCharging;}
         if(thermalFiles.isEmpty()) {
             File[] zones=new File("/sys/class/thermal").listFiles();
             if(zones!=null)for(File z:zones)if(z.getName().startsWith("thermal_zone"))try{
                 String type=read(new File(z,"type"),256).trim().toLowerCase(Locale.ROOT);
                 // Skin/battery only; CPU temperatures have different operating limits.
-                if(type.contains("skin")||type.equals("battery")||type.contains("shell"))thermalFiles.add(new File(z,"temp"));
+                if(ThermalPolicy.surface(type))thermalFiles.add(new File(z,"temp"));
             }catch(Exception ignored){}
         }
-        temperature=-1;
+        temperature=batteryTemperature>=0&&batteryTemperature<=150?batteryTemperature:-1;
         for(File f:thermalFiles)try{float t=Float.parseFloat(read(f,32).trim());if(t>1000)t/=1000;if(Float.isFinite(t)&&t>=0&&t<=150)temperature=Math.max(temperature,t);}catch(Exception ignored){}
     }
     void events(long now,boolean canLearn) {
         try {
+            if(!learningAvailable){eventStatus="unavailable: events or calibrated nits mapping missing";return;}
             List<?> list=(List<?>)call(display,"getBrightnessEvents",new Class<?>[]{});
             long since=lastEvent,max=lastEvent;Object newest=null;float chosenLux=-1;
             long eventNow=SystemClock.elapsedRealtime(), wallNow=System.currentTimeMillis();
@@ -396,7 +414,11 @@ public final class Bridge implements SensorEventListener {
             }
             boolean automatic=mode(user)==1;
             // HyperOS can report STATE_ON while an AOD pulse is still dozing.
-            Display main=display.getDisplay(0);boolean on=main!=null&&main.getState()==Display.STATE_ON&&power.isInteractive();
+            Display main=display.getDisplay(0);
+            if(main!=null&&!displayId.equals((String)call(main,"getUniqueId",new Class<?>[]{}))) {
+                System.err.println("Primary panel changed; restarting calibration");shutdown();System.exit(1);return;
+            }
+            boolean on=main!=null&&main.getState()==Display.STATE_ON&&power.isInteractive();
             registerSensors(automatic&&on);
             retrySensors(now);
             if(now-lastConfigCheck>=2000) {
@@ -409,9 +431,10 @@ public final class Bridge implements SensorEventListener {
             }
             Object info=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
             if(info==null)throw new IOException("brightness limits unavailable");
-            float minimum=number(info,"brightnessMinimum"),maximum=number(info,"brightnessMaximum"),current=number(info,"adjustedBrightness");
-            boolean blocked=flag(info,"isBrightnessOverrideByWindow")||integer(info,"highBrightnessMode")==2;
+            float minimum=number(info,"brightnessMinimum"),maximum=number(info,"brightnessMaximum"),current=number(info,hasField(info,"adjustedBrightness")?"adjustedBrightness":"brightness");
+            boolean blocked=windowBlocked(info,now)||integer(info,"highBrightnessMode")==2;
             thermal(now);
+            if(power.getCurrentThermalStatus()>=PowerManager.THERMAL_STATUS_SEVERE)temperature=Math.max(temperature,46);
             // On-change light sensors may be silent while stable; registration stays active.
             float primary=frontReading.effective(now), backLux=backReading.effective(now);
             learningLux.observe(primary,now,System.currentTimeMillis());
@@ -435,6 +458,7 @@ public final class Bridge implements SensorEventListener {
             pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)
+                .put("calibration",calibrationStatus).put("learning_available",learningAvailable).put("window_override_detection",hasField(info,"isBrightnessOverrideByWindow")?"framework":("power_dump:"+windowState))
                 .put("learning_lux",lastLearningLux).put("framework_event_lux",lastFrameworkLux)
                 .put("poll_ms",pollMs).put("front_registered",frontReading.isRegistered()).put("front_sample_age_ms",frontReading.age(now))
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())

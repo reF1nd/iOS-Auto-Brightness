@@ -2,17 +2,17 @@
 
 [![CI](https://github.com/reF1nd/iOS-Auto-Brightness/actions/workflows/ci.yml/badge.svg)](https://github.com/reF1nd/iOS-Auto-Brightness/actions/workflows/ci.yml)
 
-面向 KernelSU 的 Android 自动亮度模块重实现项目，重点是平滑调光、可靠的系统控制权交接，以及可跨重启保留的环境照度与用户亮度偏好。
+支持 KernelSU、APatch、Magisk 的 Android 自动亮度模块重实现项目，重点是平滑调光、可靠的系统控制权交接，以及可跨重启保留的环境照度与用户亮度偏好。
 
-**当前为 v7.0.0-beta.6：核心、Android 桥接、KernelSU 服务和 WebUI 已实现，Actions 生成可安装 ZIP，正在进行目标设备验收。** 自动测试通过不等于全部真机场景通过。项目名称描述调光体验目标，不表示使用或复现了 Apple 的原生算法。
+**当前为 v7.0.0-beta.7：核心、Android 桥接、KernelSU 服务和 WebUI 已实现，Actions 生成可安装 ZIP，正在进行目标设备验收。** 自动测试通过不等于全部真机场景通过。项目名称描述调光体验目标，不表示使用或复现了 Apple 的原生算法。
 
-## 首要适配目标
+## 兼容范围
 
-- 小米 17 Pro Max
-- 基于 Android 17 的 HyperOS 4
-- KernelSU
+Android 12（API 31）及以上，不限制品牌、ROM 或分辨率；ZIP 同时包含 ARM64、ARMv7、x86_64 和 x86 核心，安装时按 ABI 选择。支持采用标准模块服务和 BusyBox 的 KernelSU、APatch、Magisk。
 
-启动时核对主屏尺寸和系统标定表；不匹配则停止接管。只控制主屏，具体接口及已知限制见 [设备适配](docs/DEVICE.md)。
+兼容性取决于实际能力：临时亮度控制与系统亮度上限接口为必需；优先读取当前主屏的 nits → 系统亮度映射，缺少校准时使用明确标记的通用曲线并关闭 nits 事件学习。缺少必需接口则释放控制并报告原因。只控制默认主屏，物理屏幕切换时重新校准。详见 [兼容性说明](docs/COMPATIBILITY.md)。
+
+现有真机验证仍仅覆盖小米 17 Pro Max / Android 17 HyperOS 4 / KernelSU，其他组合不冒充已通过实测。
 
 ## 功能
 
@@ -21,7 +21,7 @@
 - 学习数据可靠保存，服务重启、整机重启和模块升级后恢复。
 - 手动模式及时交还系统，避免与系统自动调光争用。
 - 温度、电量和设备亮度上限保护，异常时明确降级。
-- 配置热加载、日志诊断和 KernelSU WebUI。
+- 配置热加载、独立离线诊断和支持 ksu.exec 的 WebUI（Magisk 需兼容宿主）。
 
 设计与验收顺序见 [重构计划](docs/PLAN.md)。
 
@@ -29,16 +29,16 @@
 
 构建、自动测试及工作流检查统一由 [GitHub Actions](https://github.com/reF1nd/iOS-Auto-Brightness/actions) 执行。详见 [贡献约定](CONTRIBUTING.md)。
 
-CI 执行 C++ 算法与真实进程持久化测试、ASan/UBSan 检查、Java 事件策略测试、Android ARM64/DEX 编译、ShellCheck、WebUI 语法检查及打包验证。所有任务通过后上传 `kernelsu-module` artifact，包含模块 ZIP 和 SHA-256。
+CI 执行 C++ 算法与真实进程持久化测试、ASan/UBSan 检查、Java 事件策略测试、Android 四种 ABI / DEX 编译、ShellCheck、WebUI 语法检查及打包验证。所有任务通过后上传 `kernelsu-module` artifact，包含模块 ZIP 和 SHA-256。
 
 CI 无法替代真机亮度、传感器、温控和耗电验收；具体记录见 [验证记录](docs/VALIDATION.md)。
 
 ## 安装与学习
 
-1. 从成功的 Actions 运行下载 `kernelsu-module`，解开 artifact 后在 KernelSU 中安装内部的模块 ZIP。
+1. 从成功的 Actions 运行下载 `kernelsu-module`，解开 artifact 后在 Root 管理器中安装内部的模块 ZIP。
 2. 重启以替换旧服务，开启系统自动亮度。
 3. 环境光稳定时调节系统亮度条，停留几秒，在 WebUI 中确认调节事件为 `saved`。学习按当前用户序号和面板配置隔离，重启后从独立数据目录读取。
-4. WebUI 支持查看样本、导入导出、清除学习、参数调整和日志。保存配置须收到核心确认。
+4. WebUI 支持查看样本、导入导出、清除学习、参数调整和日志。在线保存由核心确认；离线保存通过同一个原生配置解析器校验，服务恢复后生效。
 
 数据位于 `/data/adb/ios_auto_brightness/`，升级和卸载默认保留。参考版的单个 `user_offset` 仅作为兼容偏移导入，不生成虚构的历史学习点。首次安装没有 v7 配置时，核心校验并导入已有 v6 调参；现有 v7 配置优先。WebUI 也支持导入配置。`manual_gamma` 作为兼容信息保存，实际亮度事件学习不使用 Gamma 换算。
 
@@ -59,3 +59,5 @@ beta.5 将真实手动调节事件按发生时间匹配到模块前置光感历�
 本仓库新编写的代码和文档采用 **GNU GPL v3.0 only**（`GPL-3.0-only`），见 [LICENSE](LICENSE)。后续引入第三方组件时保留其原有许可证及归属说明。
 
 beta.6 加入前后光感变化冲突保护：前置单独骤暗时保持亮度并暂停学习，以恢复或持续的双侧变暗证据解除；后置失效时可退回前置控制。普通自动变暗增加相对速度上限，系统安全限亮仍即时生效。
+
+beta.7 补齐双向配置编辑、阳光与未保存配置预览、离线配置修复、独立诊断、无 Sensor 对象的光感发现和表面温度别名，并将固定设备适配改为能力探测与动态校准。

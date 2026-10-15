@@ -14,12 +14,18 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   }
   const document={hidden:false,getElementById(id){if(!elements.has(id)){const e=new Element();e.id=id;}return elements.get(id);},
     createElement(tag){return new Element(tag);},createElementNS(ns,tag){return new Element(tag);},querySelectorAll(){return [];}};
+  let online=true;
   let config=await readFile(new URL('../module/default.conf',import.meta.url),'utf8');
   config=config.replace('manual_gamma=2.2','manual_gamma=2.7');
   const commands=[];
   const runtime={ok:true,version:'v7-test',bridge:'active',reason:'auto',mode:'auto',lux:100,current:.1,target:.11,setting:.12,slider:'812',maximum:.4,poll_ms:8000,lux_source:'front',points:[],curve:[[0,0,0],[100,.1,.11]]};
   const window={ksu:{exec(command,options,key){
     commands.push(command);let output;
+    if(command.includes('config-save')){const match=command.match(/config-save '([^']+)'/);config=Buffer.from(match[1],'base64').toString();window[key](0,'','');return;}
+    if(command.includes('config-read')){window[key](0,config,'');return;}
+    if(command.includes('check_status.sh')){window[key](0,'OFFLINE: stale snapshot','');return;}
+    if(command.startsWith('cat ')){window[key](0,config,'');return;}
+    if(!online){window[key](1,'','service unavailable');return;}
     if(command.includes("'config-set'")) {
       const match=command.match(/'config-set' '([^']+)'/);assert.ok(match);
       config=Buffer.from(match[1],'base64').toString();output={ok:true};
@@ -33,20 +39,38 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   const source=await readFile(new URL('../module/webroot/app.js',import.meta.url),'utf8');
   const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
   await new AsyncFunction('document','window','confirm','setInterval',source)(document,window,()=>true,()=>0);
-  assert.equal(elements.get('version').textContent,'KERNELSU · v7-test');
+  assert.equal(elements.get('version').textContent,'ROOT · v7-test');
   assert.ok(elements.get('status').children.some(c=>c.children.some(e=>e.textContent==='812')));
   assert.equal(elements.get('chart').children.at(-1).tag,'circle');
   assert.equal(elements.get('night_enabled').type,'checkbox');
   elements.get('alpha_fast').value='0.6';
+  elements.get('alpha_fast').listeners.input();
+  assert.match(elements.get('config').value,/alpha_fast=0.6/);
   await elements.get('save').onclick();
   assert.match(config,/alpha_fast=0.6\n/);assert.match(config,/manual_gamma=2.7\n/);
   elements.get('configImport').files=[{size:60,async text(){return 'alpha_fast=0.5\nmanual_gamma=2.4\n';}}];
   await elements.get('configImport').onchange();
   assert.match(config,/manual_gamma=2.4/);
+  elements.get('config').value='alpha_fast=0.7\nmanual_gamma=2.9\n';elements.get('config').listeners.input();
+  assert.equal(elements.get('alpha_fast').value,'0.7');
+  assert.equal(elements.get('alpha_fast_range').value,'0.7');
+  elements.get('alpha_fast_range').value='0.8';elements.get('alpha_fast_range').listeners.input();
+  await elements.get('saveRaw').onclick();assert.match(config,/alpha_fast=0.8/);assert.match(config,/manual_gamma=2.9/);
+  elements.get('high_lux_min_pct').value='0.3';elements.get('high_lux_min_pct').listeners.input();
+  assert.match(elements.get('previewState').textContent,/未保存/);
+  assert.ok(elements.get('chart').children.some(e=>e.attrs.stroke==='#af52de'));
   elements.get('liveLog').checked=true;
   await elements.get('refresh').onclick();assert.equal(elements.get('log').textContent,'recent log');
   elements.get('clearLog').onclick();
   await new Promise(resolve=>setImmediate(resolve));
   assert.ok(commands.some(c=>c.includes("'log-clear'")));
   assert.ok(!commands.some(c=>c.includes("'learn-clear'")));
+  online=false;await elements.get('refresh').onclick();assert.equal(elements.get('status').children.length,0);
+  assert.match(elements.get('diagnostics').textContent,/OFFLINE/);
+  elements.get('config').value='alpha_fast=0.5\n';elements.get('config').listeners.input();
+  await elements.get('saveRaw').onclick();assert.equal(config,'alpha_fast=0.5\n');
+  assert.match(elements.get('notice').textContent,/服务恢复后生效/);
+  elements.get('config').value='alpha_fast=0.5\nalpha_fast=0.6';elements.get('config').listeners.input();
+  await elements.get('save').onclick();assert.equal(config,'alpha_fast=0.5\n');
+
 });
