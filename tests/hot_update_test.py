@@ -31,6 +31,7 @@ class HotUpdateTest(unittest.TestCase):
         (self.proc / 'sys/kernel/random/boot_id').write_text('boot-A\n')
         (self.proc / 'mounts').write_text('')
         self.script = self.root / 'hot-update.sh'
+        (self.root / 'process-group.sh').write_text(Path('module/process-group.sh').read_text())
         self.script.write_text(SOURCE.replace('/data/adb/modules/ios_auto_brightness', str(self.active))
                                .replace('/data/adb/modules_update/ios_auto_brightness', str(self.stage))
                                .replace('/data/adb/ios_auto_brightness', str(self.state))
@@ -93,6 +94,7 @@ class HotUpdateTest(unittest.TestCase):
             (path / name).write_text(version)
         (path / 'bin/ios_brightness_daemon').chmod(0o755)
         (path / 'hot-update.sh').write_text(self.script.read_text())
+        (path / 'process-group.sh').write_text(Path('module/process-group.sh').read_text())
         (path / 'service.sh').write_text(f'''#!/bin/sh
 state={shlex.quote(str(self.state))}
 exec 9>"$state/supervisor.lock"

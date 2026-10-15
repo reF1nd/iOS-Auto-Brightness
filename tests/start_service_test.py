@@ -42,6 +42,7 @@ class StartServiceTest(unittest.TestCase):
         source = source.replace('/proc/sys/kernel/random/boot_id', str(self.boot)).replace('sleep 1;', 'sleep 0.05;')
         self.script = self.mod / 'start-service.sh'
         self.script.write_text(source)
+        (self.mod / 'process-group.sh').write_text('iab_detach_cgroups() { [ ! -e "' + str(self.state / 'detach-fail') + '" ]; }\n')
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}', IAB_START_BB=str(self.bb))
         self.write_service()
         self.write_health()
@@ -114,6 +115,13 @@ else echo '{{"ready":false}}'; fi
         self.assertFalse((self.state / 'ready').exists(), 'no resident automatic restart')
         self.assertEqual(self.result()['state'], 'started')
         self.assertEqual((self.state / 'starts').read_text().count('started'), 2)
+
+    def test_cgroup_failure_never_spawns_service(self):
+        (self.state / 'detach-fail').touch()
+        result = self.result()
+        self.assertFalse(result['ok'])
+        self.assertIn('进程回收组', result['error'])
+        self.assertFalse((self.state / 'starts').exists())
 
     def test_guards_preserve_stop_and_data(self):
         for file in ('config.conf', 'learning.dat'):

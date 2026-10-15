@@ -49,7 +49,7 @@ with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslev
         z.writestr(info, data)
 with zipfile.ZipFile(archive) as z:
     assert z.testzip() is None
-    for name in ['module.prop','customize.sh','service.sh','hot-update.sh','start-service.sh','uninstall.sh','skip_mount',
+    for name in ['module.prop','customize.sh','service.sh','hot-update.sh','start-service.sh','process-group.sh','uninstall.sh','skip_mount',
                  'webroot/index.html','bin/arm64-v8a/ios_brightness_daemon','bridge.jar','LICENSE','SOURCE.txt']:
         assert name in z.namelist(), name
     assert not any('..' in Path(name).parts or name.startswith('/') for name in z.namelist())

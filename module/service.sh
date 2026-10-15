@@ -18,6 +18,15 @@ STATE=/data/adb/ios_auto_brightness
 umask 077
 mkdir -p "$STATE"
 chmod 700 "$STATE"
+# Boot starts normally have no app ownership. Cover third-party callers that
+# invoke service.sh directly as well: fork a fresh supervisor AFTER detaching.
+# shellcheck source=module/process-group.sh
+. "$MODDIR/process-group.sh"
+iab_detach_cgroups || exit 1
+if [ "$IAB_CGROUP_MOVED" = 1 ]; then
+  nohup setsid sh "$MODDIR/service.sh" </dev/null >>"$STATE/supervisor.log" 2>&1 &
+  exit 0
+fi
 exec 9>"$STATE/supervisor.lock"
 flock -n 9 || exit 0
 LOG="$STATE/service.log"

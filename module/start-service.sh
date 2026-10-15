@@ -25,7 +25,7 @@ guard() {
   [ "$first" != "$boot_id" ] || fail '首次安装尚未重启，请先重启手机'
   [ -s "$STATE/activated-boot" ] || [ -n "$first" ] || fail '尚无模块激活记录，请先重启手机'
   [ ! -e "$MODDIR/update" ] || fail '模块有待完成的更新，请等待安装完成或重启'
-  for file in bridge.jar service.sh control.sh SOURCE.txt; do
+  for file in bridge.jar service.sh control.sh process-group.sh SOURCE.txt; do
     [ -s "$MODDIR/$file" ] || fail '模块文件不完整，请重新安装'
   done
   [ -x "$MODDIR/bin/ios_brightness_daemon" ] || fail '核心文件不可执行，请重新安装'
@@ -58,6 +58,11 @@ exec 7>"$STATE/core.lock"
 flock -n 7 || fail '旧核心尚未退出，请稍后重试'
 guard
 exec 7>&- 9>&-
+# Move the short-lived launcher before forking: moving an already tracked
+# supervisor cannot remove an existing Android phantom-process record.
+# shellcheck source=module/process-group.sh
+. "$MODDIR/process-group.sh"
+iab_detach_cgroups || fail '无法脱离管理器的进程回收组，服务未启动；请查看启动日志'
 nohup setsid "$IAB_START_BB" sh "$MODDIR/service.sh" 8>&- 7>&- 9>&- \
   </dev/null >>"$STATE/supervisor.log" 2>&1 &
 # Success requires the installed source identity and two advancing heartbeats.

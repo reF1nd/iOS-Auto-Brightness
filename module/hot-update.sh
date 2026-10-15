@@ -81,7 +81,7 @@ hot_preflight() {
       [ ! -e "$hot_tree/$hot_hook" ] || return 1
     done
   done
-  for hot_file in bridge.jar bin/ios_brightness_daemon service.sh control.sh hot-update.sh webroot/index.html SOURCE.txt; do
+  for hot_file in bridge.jar bin/ios_brightness_daemon service.sh control.sh hot-update.sh process-group.sh webroot/index.html SOURCE.txt; do
     [ -s "$HOT_STAGED/$hot_file" ] || return 1
   done
   hot_flags && return 1
@@ -109,6 +109,11 @@ hot_unlock_service() { exec 7>&- 9>&-; }
 hot_start() {
   hot_unlock_service
   hot_flags && return 1
+  # Retain the new helper in the transaction so rollback to an older module
+  # also launches outside the manager app, even if its files lack the helper.
+  # shellcheck source=module/process-group.sh
+  . "$HOT_TX/process-group.sh"
+  iab_detach_cgroups || return 1
   # In particular, do not let the service inherit the update transaction lock.
   nohup setsid "$IAB_BB" sh "$HOT_ACTIVE/service.sh" 8>&- 7>&- 9>&- \
     </dev/null >>"$HOT_STATE/supervisor.log" 2>&1 &
@@ -205,6 +210,7 @@ hot_prepare() {
   trap hot_cleanup EXIT
   trap 'exit 1' HUP INT TERM
   cp "$HOT_STAGED/hot-update.sh" "$HOT_TX/worker.sh" || return 1
+  cp "$HOT_STAGED/process-group.sh" "$HOT_TX/process-group.sh" || return 1
   mkdir "$HOT_TX/new" "$HOT_TX/data-backup" || return 1
   cp -a "$HOT_STAGED/." "$HOT_TX/new/" || return 1
   # Copies made below the private state directory otherwise inherit adb_data_file.
