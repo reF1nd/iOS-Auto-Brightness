@@ -177,8 +177,7 @@ public final class Bridge implements SensorEventListener {
             if(found!=null)throw new IOException("ambiguous sensor name: "+name);found=s;
         }
         if(found==null)throw new IOException("sensor not found: "+name);
-        String type=(found.getName()+" "+found.getStringType()).toLowerCase(Locale.ROOT);
-        if(found.getType()!=Sensor.TYPE_LIGHT&&!(type.contains("light")||type.contains("lux")||type.contains("als")))throw new IOException("not a light sensor");
+        if(!SensorChoice.luxSensor(found.getType(),found.getName(),found.getStringType()))throw new IOException("not a verified lux sensor");
         return found;
     }
     static void validateChoice(SensorManager manager,SensorChoice choice) throws Exception {
@@ -204,7 +203,7 @@ public final class Bridge implements SensorEventListener {
         if(!choice.back.isEmpty()&&!choice.back.equals("none"))rear=exactSensor(sensors,choice.back);
         else if(choice.back.isEmpty())for(Sensor sensor:sensors.getSensorList(Sensor.TYPE_ALL)) {
             String name=(sensor.getName()+" "+sensor.getStringType()).toLowerCase(Locale.ROOT);
-            if(sensor!=selected&&(name.contains("back")||name.contains("rear"))&&(name.contains("light")||name.contains("lux")||name.contains("als"))&&!sensor.isWakeUpSensor()){rear=sensor;break;}
+            if(sensor!=selected&&SensorChoice.luxSensor(sensor.getType(),sensor.getName(),sensor.getStringType())&&(name.contains("back")||name.contains("rear"))&&!sensor.isWakeUpSensor()){rear=sensor;break;}
         }
         if(selected!=null&&selected==rear)throw new IOException("front and rear cannot be the same sensor");
         registerSensors(false);front=selected;back=rear;proximity=sensors.getDefaultSensor(Sensor.TYPE_PROXIMITY);
@@ -673,8 +672,7 @@ public final class Bridge implements SensorEventListener {
             }else {
                 org.json.JSONArray list=new org.json.JSONArray();
                 for(Sensor sensor:manager.getSensorList(Sensor.TYPE_ALL)) {
-                    String name=(sensor.getName()+" "+sensor.getStringType()).toLowerCase(Locale.ROOT);
-                    if(sensor.getType()==Sensor.TYPE_LIGHT||name.contains("lux")||name.contains("light")||name.contains("als"))list.put(sensor.getName());
+                    if(SensorChoice.luxSensor(sensor.getType(),sensor.getName(),sensor.getStringType()))list.put(sensor.getName());
                 }
                 System.out.println(new JSONObject().put("ok",true).put("data",file.isFile()?read(file,4096):new SensorChoice("").encode()).put("sensors",list));
             }return;

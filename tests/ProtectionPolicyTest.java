@@ -26,6 +26,10 @@ public final class ProtectionPolicyTest {
         check(!ProtectionPolicy.clearedTemporary(main.replace("Reason =0","Reason =1")),"cannot recover thermal cap");
         check(!ProtectionPolicy.clearedTemporary(main.replace("mDisplayId=0","mDisplayId=1")),"rear display cannot authorize write");
         check(!ProtectionPolicy.clearedTemporary(main+main),"ambiguous controller rejected");
+        check(SensorChoice.luxSensor(5,"Ambient Light","android.sensor.light"),"standard calibrated lux");
+        check(SensorChoice.luxSensor(33171055,"Rear ALS","vendor.sensor.back_lux"),"vendor declared lux");
+        check(!SensorChoice.luxSensor(33171111,"Ambient Light Raw Data","vendor.sensor.ambientlight.raw"),"raw channels are not lux");
+        check(!SensorChoice.luxSensor(33172112,"Optimization back light fov Sensor",""),"field of view is not lux");
         var s=new SensorChoice("front=Exact Light\nback=none\nsysfs=/sys/bus/iio/devices/iio:device0/in_illuminance_input\n");
         check(new SensorChoice(s.encode()).front.equals("Exact Light"),"selection round trip");
         for(String bad:new String[]{"front=a\nfront=b", "unknown=a", "sysfs=/data/secret/lux", "sysfs=/sys/../data/lux","sysfs=/sys/raw_adc","front=a\u0001b"}) {

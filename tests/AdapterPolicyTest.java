@@ -22,6 +22,7 @@ public final class AdapterPolicyTest {
         check(LuxFallback.fromDump(dump,"Missing",20000,0)==null,"no ambiguous match");
         check(LuxFallback.fromDump(dump,null,20000,15000).lux==0,"discover front without Sensor object");
         check(LuxFallback.fromDump(dump+"Other light: last 1 events\n",null,20000,15000)==null,"ambiguous sensor discovery rejected");
+        check(LuxFallback.fromDump(dump+"Ambient Light Raw Data: last 1 events\nOptimization light fov Sensor: last 1 events\n",null,20000,15000).lux==0,"auxiliary channels must not create discovery ambiguity");
         Path root=Files.createTempDirectory("iab-sources");
         try {
             Path sensors=Files.createDirectories(root.resolve("sensors/als"));

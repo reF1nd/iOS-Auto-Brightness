@@ -35,7 +35,7 @@ public final class LuxFallback {
             for(String line:text.split("\\r?\\n")) {
                 int end=line.indexOf(": last ");if(end<=0||Character.isWhitespace(line.charAt(0)))continue;
                 String name=line.substring(0,end), lower=name.toLowerCase(java.util.Locale.ROOT);
-                if((lower.contains("light")||lower.contains("als"))&&!lower.contains("back")&&!lower.contains("rear")) {
+                if((lower.contains("light")||lower.contains("als"))&&!SensorChoice.auxiliary(lower)&&!lower.contains("back")&&!lower.contains("rear")) {
                     if(chosen!=null&&!chosen.equals(name))return null;chosen=name;
                 }
             }

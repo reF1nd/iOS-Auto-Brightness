@@ -48,3 +48,5 @@ sh /data/adb/modules/ios_auto_brightness/control.sh config-read
 离线 `control.sh log-read` 按时间拼接轮转备份和当前日志的最近 80 行；`log-clear` 清除当前日志及备份，与轮转互斥。健康诊断检查进程身份、启动时间、同次开机和心跳新鲜度；CPU 分开报告 Java 桥接与 native 核心的进程平均占用（不含 supervisor 和短命 dumpsys 子进程）。
 
 Android 12/12L 的 AOSP `BrightnessInfo` 尚无 `brightnessMaxReason`，该已知能力缺失不会冒充字段读取成功：状态显示 `thermal_and_system_cap_only`，使用系统热状态及实时亮度上下限保护，禁用丢失输出的自动重试。Android 13+ 应有该字段而缺失、或热状态查询失败时，暂停接管。接口依据：[Android 12L](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-12.1.0_r1/core/java/android/hardware/display/BrightnessInfo.java)、[Android 13](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-13.0.0_r1/core/java/android/hardware/display/BrightnessInfo.java)。
+
+可选 Sensor 仅包含标准 TYPE_LIGHT 或厂商明确声明 lux 的类型；原始通道（raw）和视场辅助量（fov）从选择、后置发现和 dumpsys 自动发现中排除。只按名称含 light/ALS 判断单位并不可靠。
