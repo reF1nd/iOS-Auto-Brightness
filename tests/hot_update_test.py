@@ -110,6 +110,10 @@ case "$1" in
 stop) touch "$state/stop"; echo '{{"ok":true}}' ;;
 health) [ -f "$state/running" ] && echo '{{"health":"healthy"}}' ;;
 upgrade-ready)
+  if [ -f "$state/mutate-stage" ]; then
+    rm -f "$state/mutate-stage"
+    echo 'concurrent during health check' > {shlex.quote(str(self.stage / 'SOURCE.txt'))}
+  fi
   [ ! -f "$state/fail-ready" ] && cmp -s "$state/running" "${{0%/*}}/SOURCE.txt" || exit 1
   printf '{{"ready":true,"heartbeat_ms":%s}}\\n' "$(date +%s%3N)" ;;
 esac
@@ -216,6 +220,16 @@ esac
         self.installer_exited()
         self.wait_for(lambda: (self.state / 'update-status').read_text().strip() == 'pending')
         self.assertTrue((self.active / 'update').exists())
+
+    def test_stage_changed_during_health_check_is_not_acknowledged(self):
+        self.installed()
+        result = self.prepare()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        (self.state / 'mutate-stage').touch()
+        self.installer_exited()
+        self.wait_for(lambda: (self.state / 'update-status').read_text().strip() == 'pending')
+        self.assertTrue((self.active / 'update').exists())
+        self.assertIn('Staged runtime files changed', (self.state / 'hot-update.log').read_text())
 
     def test_failed_new_service_rolls_back_and_quarantines_stage(self):
         self.installed()

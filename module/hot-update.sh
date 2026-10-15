@@ -163,16 +163,23 @@ hot_cleanup() {
   if [ "$HOT_STOPPED" = 1 ]; then hot_restore >>"$HOT_STATE/hot-update.log" 2>&1; fi
   hot_unlock_service
 }
+hot_verify_transaction() {
+  [ "$(cat "$HOT_STAGED/.iab-install-token" 2>/dev/null)" = "$HOT_TOKEN" ] || { echo 'Staged transaction token changed'; return 1; }
+  hot_matches "$HOT_STAGED" "$HOT_TX/new.manifest" || { echo 'Staged runtime files changed'; return 1; }
+  hot_matches "$HOT_ACTIVE" "$HOT_TX/new.manifest" || { echo 'Active runtime files changed'; return 1; }
+}
 hot_finish() {
   hot_wait=0
   while [ "$(hot_stamp "$HOT_SHELL")" = "$HOT_SHELL_STAMP" ] || [ "$(hot_stamp "$HOT_PARENT")" = "$HOT_PARENT_STAMP" ]; do
     [ "$hot_wait" -lt 90 ] || { echo 'Installer exit unconfirmed; keeping pending update'; return 1; }
     sleep 1; hot_wait=$((hot_wait + 1))
   done
-  [ "$(cat "$HOT_STAGED/.iab-install-token" 2>/dev/null)" = "$HOT_TOKEN" ] || return 1
-  hot_matches "$HOT_STAGED" "$HOT_TX/new.manifest" || return 1
-  hot_matches "$HOT_ACTIVE" "$HOT_TX/new.manifest" || return 1
-  hot_ready || return 1
+  hot_verify_transaction || return 1
+  hot_ready || { echo 'New service health unconfirmed'; return 1; }
+  # A second installer can extract files before it reaches our transaction lock.
+  # Revalidate after the heartbeat wait, immediately before acknowledging this ZIP.
+  hot_flags && return 1
+  hot_verify_transaction || return 1
   # The native installer may recreate update after customize.sh returns.
   # Retain its staged copy for the manager's normal mount/next-boot lifecycle.
   rm -f "$HOT_ACTIVE/update" || return 1
