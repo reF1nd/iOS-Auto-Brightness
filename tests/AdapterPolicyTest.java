@@ -8,7 +8,21 @@ public final class AdapterPolicyTest {
     static void check(boolean b,String msg){if(!b)throw new AssertionError(msg);}
     public static void main(String[] args) throws Exception {
         var cached=new LuxFallback.Sample(42,19000,"sysfs");
-        check(LuxFallback.select(0,20,cached,20000,10000).source.equals("front"),"zero front takes precedence");
+        check(LuxFallback.select(0,20,cached,20000,10000).lux==20,"zero front must not hide brighter rear");
+        var fusion=LuxFallback.select(.738f,9.774f,cached,20000,10000);
+        check(fusion.source.equals("dual_max_v1")&&fusion.lux==9.774f,"lamp behind phone continuously contributes");
+        check(LuxFallback.select(20,0,cached,20000,10000).lux==20,"covered rear does not darken front");
+        check(LuxFallback.select(0,0,cached,20000,10000).lux==0,"true dual darkness");
+        check(LuxFallback.select(20,9,cached,20000,10000).source.equals(fusion.source),"dominant side changes retain learning scope");
+        check(LuxFallback.select(9,Float.NaN,cached,20000,10000).source.equals("front"),"invalid rear degrades to front");
+        check(LuxFallback.select(9,200001,cached,20000,10000).lux==9,"out-of-range rear never enters fusion");
+        var history=new org.ref1nd.brightness.LearningLux();
+        history.observe(fusion.lux,20000,1700000020000L);
+        check(history.atEvent(1700000023000L,24000,1700000024000L)==9.774f,"events save fused control coordinate");
+        var rearReading=new org.ref1nd.brightness.LightReading();rearReading.registration(true,true);rearReading.update(9.774f,10000);
+        check(LuxFallback.select(0,rearReading.effective(90000),null,90000,0).lux==9.774f,"stable on-change rear continues to contribute");
+        rearReading.registration(false,true);
+        check(LuxFallback.select(.7f,rearReading.effective(90001),null,90001,0).source.equals("front"),"unregistered rear cannot reuse old fusion sample");
         check(LuxFallback.select(-1,20,cached,20000,10000).source.equals("rear"),"rear fallback");
         check(LuxFallback.select(-1,-1,cached,20000,10000).lux==42,"file fallback");
         check(LuxFallback.select(-1,-1,cached,35001,10000).lux<0,"stale file rejected");

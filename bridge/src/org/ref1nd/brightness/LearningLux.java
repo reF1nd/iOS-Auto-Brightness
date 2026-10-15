@@ -3,7 +3,7 @@ package org.ref1nd.brightness;
 
 import java.util.ArrayDeque;
 
-/** The controller's direct front-light coordinate at a real user event's time. */
+/** The controller's selected control-light coordinate at a real user event's time. */
 public final class LearningLux {
     private static final long WINDOW = 2000, RETENTION = 20000;
     private static final int LIMIT = 512;

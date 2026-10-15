@@ -45,7 +45,7 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   const source=await readFile(new URL('../module/webroot/app.js',import.meta.url),'utf8');
   const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
   await new AsyncFunction('document','window','confirm','setInterval',source)(document,window,()=>true,()=>0);
-  assert.equal(elements.get('version').textContent,'ROOT · v7-test');
+  assert.equal(elements.get('version').textContent,'reF1nd · v7-test');
   assert.ok(elements.get('status').children.some(c=>c.children.some(e=>e.textContent==='812')));
   assert.equal(elements.get('chart').children.at(-1).tag,'circle');
   assert.equal(elements.get('night_enabled').type,'checkbox');

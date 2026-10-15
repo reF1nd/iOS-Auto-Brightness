@@ -128,13 +128,14 @@ double Controller::nightScale() const {
 void Controller::reset() {
     frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;dark_pending_=false;dark_since_=-1;
+    near_since_=-1;far_since_=-1;proximity_released_=false;front_baseline_=-1;
     guard_front_=0;guard_back_=0;guard_confirmed_=false;guard_missing_=false;ambient_history_.clear();
     high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;alpha_=0;desired_=0;
     sunlight_target_=0;ramp_from_=0;ramp_target_=-1;ramp_at_=0;ramp_duration_=0;fast_until_=0;
 }
 void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
 bool Controller::learn(double lux,double value,int64_t time) {
-    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||dark_pending_||smooth_<0||frame_.lux<0) return false;
+    if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_released_||dark_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
     learning.add(lux,value,time);hold(frame_.now);return true;
@@ -148,10 +149,36 @@ Output Controller::step(const Frame& f) {
     if(!f.automatic) {reset();return release("manual_or_unknown");}
     if(!f.screen) {reset();return release("screen_off");}
     if(f.blocked) return release("system_override");
-    if(f.near) return release("proximity");
+
     if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {smooth_=-1;dark_pending_=false;dark_since_=-1;guard_confirmed_=false;ambient_history_.clear();return release("sensor_unavailable");}
     if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) return release("limits_unavailable");
+    // Brief proximity pulses must not expose a different system brightness.
+    // Freeze an existing output (and learning) while confirming obstruction.
+    // State/safety exits above always win, including a newly lowered cap.
+    if(f.near) {
+        far_since_=-1;
+        if(near_since_<0||f.now<near_since_)near_since_=f.now;
+        if(f.now-near_since_>=600)proximity_released_=true;
+        last_=f.now;
+        if(proximity_released_)return release("proximity");
+        if(output_<0||f.now<hold_until_)return release("proximity_pending");
+        const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
+            std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
+        output_=std::clamp(output_,f.minimum,cap);desired_=output_;
+        ramp_duration_=0;ramp_target_=-1;
+        return {true,output_,"proximity_pending"};
+    }
+    near_since_=-1;
+    if(proximity_released_) {
+        if(far_since_<0||f.now<far_since_)far_since_=f.now;
+        if(f.now-far_since_<300)return release("proximity_recovery");
+        proximity_released_=false;far_since_=-1;
+    }
     double lux=f.lux;
+    const bool dual=std::isfinite(f.front)&&f.front>=0&&f.front<=200000;
+    const double frontLux=dual?f.front:lux;
+    const double frontBaseline=dual?front_baseline_:smooth_;
+
     // A covered rear sensor is normal on a desk. It can extend spike
     // confirmation, but must never cap a stable front-light measurement.
     double dt=last_?std::clamp((f.now-last_)/1000.0,.01,8.0):.25;last_=f.now;
@@ -166,18 +193,18 @@ Output Controller::step(const Frame& f) {
     // sub-lux noise or a covered rear sensor as strong contrary evidence; an
     // absolute 20-lux gate previously discarded a stable 19-lux rear reading.
     const bool rearValid=std::isfinite(f.back)&&f.back>=0&&f.back<=200000;
-    const bool rearBright=rearValid&&(f.back+1)/(lux+1)>2;
-    if(guard_confirmed_&&lux>=smooth_*.8)guard_confirmed_=false;
-    if(!dark_pending_&&!guard_confirmed_&&smooth_>=1&&(lux+1)/(smooth_+1)<.65&&rearBright) {
-        dark_pending_=true;dark_since_=-1;guard_front_=smooth_;guard_back_=rearBaseline;
+    const bool rearBright=rearValid&&(f.back+1)/(frontLux+1)>2;
+    if(guard_confirmed_&&frontLux>=frontBaseline*.8)guard_confirmed_=false;
+    if(!dark_pending_&&!guard_confirmed_&&frontBaseline>=1&&(frontLux+1)/(frontBaseline+1)<.65&&rearBright&&(!dual||lux<smooth_*.8)) {
+        dark_pending_=true;dark_since_=-1;guard_front_=frontBaseline;guard_back_=rearBaseline;
     }
     if(dark_pending_) {
-        double frontRatio=(lux+1)/(guard_front_+1),rearRatio=(f.back+1)/(guard_back_+1);
+        double frontRatio=(frontLux+1)/(guard_front_+1),rearRatio=(f.back+1)/(guard_back_+1);
         // Crossing an absolute/contrast threshold is not proof of darkness.
         // Require both sensors near darkness, or comparable relative declines
         // from the pre-drop baselines, continuously for the confirmation period.
-        bool corroborated=rearValid&&((lux<=1&&f.back<=1)||(rearRatio<=.5&&rearRatio<=frontRatio*1.5));
-        if(lux>=guard_front_*.8) {dark_pending_=false;dark_since_=-1;}
+        bool corroborated=rearValid&&((frontLux<=1&&f.back<=1)||(rearRatio<=.5&&rearRatio<=frontRatio*1.5));
+        if(frontLux>=guard_front_*.8||(dual&&lux>=smooth_*.8)) {dark_pending_=false;dark_since_=-1;}
         else if(corroborated||!rearValid) {
             if(dark_since_<0||guard_missing_!=!rearValid)dark_since_=f.now;
             guard_missing_=!rearValid;
@@ -185,6 +212,8 @@ Output Controller::step(const Frame& f) {
             if(f.now-dark_since_>=(rearValid?2000:5000)){dark_pending_=false;dark_since_=-1;guard_confirmed_=true;}
         } else dark_since_=-1;
     }
+    if(dual&&!dark_pending_)front_baseline_=front_baseline_<0?frontLux:
+        front_baseline_+(1-std::pow(1-config.alpha_mid,dt/.25))*(frontLux-front_baseline_);
     if(dark_pending_)lux=smooth_;
     trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
     if(trend_.size()>=3) {

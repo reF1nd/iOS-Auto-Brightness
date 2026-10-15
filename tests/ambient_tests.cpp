@@ -84,5 +84,43 @@ int main(){try {
         f.lux=0;run(c,f,100);
         check(!c.ambientGuard()&&f.current<start,"covered/noise-level rear cannot freeze normal dimming");
     }
+    // Exact short near/far pulses observed at 19:31:29: no handoff to the
+    // much brighter OEM output, no shaded learning, and caps still win.
+    c=controller();f=initial();f.lux=9.774;f.front=.738;f.back=9.774;
+    c.step(f);run(c,f,40);const double steady=f.current;
+    for(int duration: {200,360}) {
+        f.near=true;f.now+=50;o=c.step(f);
+        check(o.apply&&o.reason=="proximity_pending"&&o.value==steady,"near pulse holds existing output");
+        check(!c.learn(f.lux,.03,300000),"unconfirmed proximity cannot teach");
+        f.now+=duration;o=c.step(f);check(o.apply&&o.value==steady,"short obstruction never hands off");
+        f.near=false;f.now+=50;o=c.step(f);check(o.apply&&std::abs(o.value-steady)<.00001,"short pulse recovery has no bright reseed");
+    }
+    f.near=true;f.now+=50;c.step(f);f.maximum=.0005;f.now+=100;o=c.step(f);
+    check(o.apply&&o.value<=.0005,"lower system cap applies during proximity debounce");
+    f.blocked=true;f.now+=100;o=c.step(f);check(!o.apply,"thermal/system override is immediate during debounce");
+    f.blocked=false;f.now+=500;o=c.step(f);check(!o.apply&&o.reason=="proximity","sustained obstruction releases");
+    f.near=false;f.now+=50;o=c.step(f);check(!o.apply&&o.reason=="proximity_recovery","confirmed obstruction requires stable far");
+    check(!c.learn(f.lux,.0004,300001),"recovery cannot teach");
+    f.now+=300;o=c.step(f);check(o.apply&&o.value<=f.maximum,"far recovery respects cap");
+    f.screen=false;f.near=true;f.now+=50;check(!c.step(f).apply,"screen off immediately releases");
+
+    // Wake already in front-dark/rear-bright conditions: the fused input is
+    // the control and learning coordinate, not a spurious front-drop guard.
+    c=controller();c.learning={};f=initial();f.front=0;f.lux=f.back=100;
+    c.step(f);run(c,f,160);
+    check(c.smoothLux()==100&&!c.ambientGuard(),"bright rear remains effective after wake");
+    check(c.learn(100,.07,400000),"stable fusion can learn at its own coordinate");
+    run(c,f,40);check(std::abs(f.current-.07)<.00001,"learned fusion target remains after hold");
+    f.front=.7;run(c,f,20);f.front=0;run(c,f,20);
+    check(c.smoothLux()==100&&!c.ambientGuard()&&std::abs(f.current-.07)<.00001,"front zero fluctuations cannot dim stable rear input");
+    f.lux=f.back=0;run(c,f,160);check(c.smoothLux()<1&&f.current<.07,"both dark still dim");
+    f.lux=f.back=100;f.blocked=true;check(!c.step(f).apply,"fusion cannot override thermal protection");
+
+    // Preserve the older orientation guard when a front-only drop would
+    // lower even the fused input (rear is brighter than zero, but not 8.825).
+    c=controller();f=initial();f.front=f.lux=8.825;f.back=2;c.step(f);run(c,f,40);
+    const double fusedHeld=f.current;f.front=0;f.lux=2;run(c,f,40);
+    check(c.ambientGuard()&&f.current==fusedHeld,"fusion retains front-drop guard with weaker rear");
+    f.back=f.lux=0;run(c,f,10);check(!c.ambientGuard(),"dual darkness releases fusion guard");
     std::cout<<"Orientation guard, corroborated darkness, learning exclusion and downward slew passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

@@ -156,3 +156,24 @@ with tempfile.TemporaryDirectory() as state:
     assert result.returncode != 0 and open(config).read() == before
     result = subprocess.run([exe, '--config', 'check', config], text=True, capture_output=True)
     assert result.returncode == 0 and result.stdout == before
+
+# FRAME3 keeps fused learning separate and preserves it across process restart.
+with tempfile.TemporaryDirectory() as state:
+    p = start()
+    ask(p, 'USER 0')
+    ask(p, 'SOURCE dualmaxv1')
+    ask(p, 'FRAME3 1000 1 1 9.774 9.774 0 35 80 0 0.03 0.001 0.4 0 12 0.738')
+    assert ask(p, 'EVENT 500000 9.774 0.03')['storage'] == 'saved'
+    assert ask(p, 'SOURCE default')['points'] == []
+    p.kill(); p.wait(timeout=5); p = start(); ask(p, 'USER 0')
+    saved = ask(p, 'SOURCE dualmaxv1')['points'][0]
+    assert saved['lux'] == 9.774 and saved['brightness'] == 0.03
+    ask(p, 'FRAME3 1000 1 1 9.774 9.774 0 35 80 0 0.03 0.001 0.4 0 12 0')
+    for now in range(1250, 11000, 250):
+        s = ask(p, f'FRAME3 {now} 1 1 9.774 9.774 0 35 80 0 0.03 0.001 0.4 0 12 0')
+    assert s['apply'] and abs(s['target'] - 0.03) < 1e-7 and not s['ambient_guard'], s
+    assert ask(p, 'FRAME3 11000 1 1 9.774 9.774 1 35 80 0 0.03 0.001 0.4 0 12 0')['reason'] == 'proximity_pending'
+    assert ask(p, 'FRAME3 11400 1 1 9.774 9.774 0 35 80 0 0.03 0.001 0.4 0 12 0')['apply']
+    assert not ask(p, 'FRAME3 11500 1 1 9.774 9.774 1 35 80 0 0.03 0.001 0.4 1 12 0')['apply']
+    p.stdin.close(); assert p.wait(timeout=5) == 0
+print('Fused coordinate persistence, wake, proximity debounce and protection passed')

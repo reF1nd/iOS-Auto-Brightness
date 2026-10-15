@@ -26,6 +26,8 @@ public final class LuxFallback {
         catch(RuntimeException e){return -1;}
     }
     public static Sample select(float front, float rear, Sample fallback, long now, long sessionStart) {
+        // Both valid lux sensors participate continuously, including at wake.
+        if(valid(front)&&valid(rear))return new Sample(Math.max(front,rear),now,"dual_max_v1");
         if(valid(front))return new Sample(front,now,"front");
         if(valid(rear))return new Sample(rear,now,"rear");
         if(fallback!=null&&fallback.usable(now,sessionStart))return fallback;

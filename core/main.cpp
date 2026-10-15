@@ -71,9 +71,10 @@ int main(int argc,char**argv) {
                     std::string source;if(!(in>>source)||!hasUser||source.empty()||source.size()>40||source.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789")!=std::string::npos)throw std::runtime_error("invalid source");end();
                     auto identity=core.profile.id+(source=="default"?"":"-"+source);
                     if(store.profile!=identity){store.profile=identity;core.reset();core.learning=store.load(saveStatus);last={false,0,"source_changed"};}
-                } else if(cmd=="FRAME"||cmd=="FRAME2") {
+                } else if(cmd=="FRAME"||cmd=="FRAME2"||cmd=="FRAME3") {
                     Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");
-                    if(cmd=="FRAME2"&&(!(in>>f.local_hour)||f.local_hour<0||f.local_hour>23))throw std::runtime_error("invalid local hour");
+                    if(cmd!="FRAME"&&(!(in>>f.local_hour)||f.local_hour<0||f.local_hour>23))throw std::runtime_error("invalid local hour");
+                    if(cmd=="FRAME3"&&(!(in>>f.front)||!std::isfinite(f.front)||f.front < -1||f.front>200000))throw std::runtime_error("invalid raw front");
                     end();
                     if(!hasUser)throw std::runtime_error("user required");
                     last=core.step(f);

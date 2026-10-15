@@ -37,6 +37,8 @@ struct Frame {
     int64_t now=0;
     bool automatic=false, screen=false, blocked=false, near=false;
     double lux=-1, back=-1, temp=-1, current=0, minimum=0, maximum=1;
+    // FRAME3: raw front used only for orientation checks; lux remains the learning/control coordinate.
+    double front=-1;
     int battery=-1;
     int local_hour=-1;
     bool charging=false;
@@ -66,7 +68,9 @@ private:
     std::vector<double> trend_;
     bool fast_dark_=false, sunlight_=false, dark_pending_=false, guard_confirmed_=false, guard_missing_=false;
     int64_t dark_since_=-1;
-    double guard_front_=0, guard_back_=0;
+    double guard_front_=0, guard_back_=0, front_baseline_=-1;
+    int64_t near_since_=-1, far_since_=-1;
+    bool proximity_released_=false;
     std::vector<Frame> ambient_history_;
     int high_confirm_=0;
     int64_t high_exit_at_=-1, last_high_confirm_=-1;
