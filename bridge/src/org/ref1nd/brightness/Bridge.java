@@ -54,12 +54,13 @@ public final class Bridge implements SensorEventListener {
     final String displayId;
     JSONObject result=new JSONObject();
     Sensor front, back, proximity;
-    float frontLux=-1, backLux=-1;
+    float frontLux=-1;
+    final LightReading backReading=new LightReading();
     boolean near=false, registered=false, overridden=false, eligible=false;
     int user=-1;
     long userSerial=-1, lastEvent=System.currentTimeMillis(), frontAt=0, pendingAt=0;
     long changedAt=-10000, heartbeat=SystemClock.elapsedRealtime(), lastFrame=0, lastThermal=0, lastStatus=0;
-    long started=SystemClock.elapsedRealtime(), lastConfigCheck=0, backAt=0;
+    long started=SystemClock.elapsedRealtime(), lastConfigCheck=0;
     String configText="";
     float temperature=-1, lastWrite=-1;
     int battery=-1;
@@ -195,15 +196,16 @@ public final class Bridge implements SensorEventListener {
         if(wanted==registered)return;
         if(wanted) {
             registered=sensors.registerListener(this,front,250000,handler);
-            if(registered&&back!=null)sensors.registerListener(this,back,500000,handler);
+            boolean backRegistered=registered&&back!=null&&sensors.registerListener(this,back,500000,handler);
+            backReading.registration(backRegistered,back!=null&&back.getReportingMode()==Sensor.REPORTING_MODE_ON_CHANGE);
             if(registered&&proximity!=null)sensors.registerListener(this,proximity,SensorManager.SENSOR_DELAY_NORMAL,handler);
             sensorStatus=registered?front.getName():"registration_failed";
-        }else{sensors.unregisterListener(this);registered=false;frontLux=-1;backLux=-1;frontAt=0;backAt=0;near=false;sensorStatus="suspended";}
+        }else{sensors.unregisterListener(this);registered=false;frontLux=-1;backReading.registration(false,false);frontAt=0;near=false;sensorStatus="suspended";}
     }
     @Override public void onSensorChanged(SensorEvent e) {
         float v=e.values[0];if(!Float.isFinite(v)||v<0)return;
         if(e.sensor==front){frontLux=v;frontAt=SystemClock.elapsedRealtime();}
-        else if(e.sensor==back){backLux=v;backAt=SystemClock.elapsedRealtime();}
+        else if(e.sensor==back){backReading.update(v,SystemClock.elapsedRealtime());}
         else if(e.sensor==proximity)near=v<Math.min(5,proximity.getMaximumRange());
     }
     @Override public void onAccuracyChanged(Sensor s,int accuracy) {}
@@ -313,8 +315,9 @@ public final class Bridge implements SensorEventListener {
             thermal(now);
             // On-change light sensors may be silent while stable; registration stays active.
             float lux=registered&&frontAt>=started?frontLux:-1;
+            float backLux=backReading.effective(now);
             eligible=automatic&&on&&!blocked&&!near&&lux>=0;
-            result=request(String.format(Locale.ROOT,"FRAME %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d",now,automatic?1:0,on?1:0,lux,now-backAt<30000?backLux:-1,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0));
+            result=request(String.format(Locale.ROOT,"FRAME %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,current,minimum,maximum,blocked?1:0));
             if(!automatic||!on){pending=null;lastEvent=System.currentTimeMillis();}
             else if(now-lastFrame>=750){events(now,eligible);lastFrame=now;result=request("STATUS");}
             if(result.optBoolean("apply")&&now-changedAt>=2000&&pending==null&&!observe) {
@@ -328,7 +331,9 @@ public final class Bridge implements SensorEventListener {
             result.put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("last_event_rejection",lastEventRejection)
                 .put("sensor",sensorStatus).put("back_sensor",back==null?"unavailable":back.getName()).put("proximity_sensor",proximity==null?"unavailable":proximity.getName())
-                .put("front_lux",frontLux).put("back_lux",backLux)
+                .put("front_lux",frontLux).put("back_lux",backReading.raw()).put("back_lux_effective",backLux)
+                .put("back_sample_age_ms",backReading.age(now)).put("back_registered",backReading.isRegistered())
+                .put("back_reporting_mode",back==null?-1:back.getReportingMode())
                 .put("temperature",temperature).put("battery",battery).put("mode",automatic?"auto":"manual_or_unknown").put("screen_on",on)
                 .put("current",current).put("setting",number(info,"brightness")).put("minimum",minimum).put("maximum",maximum).put("display",0).put("uptime_ms",now-started).put("heartbeat_ms",now).put("cpu_percent",100.0*android.os.Process.getElapsedCpuTime()/Math.max(1,now-started));
             String reason=result.optString("reason");

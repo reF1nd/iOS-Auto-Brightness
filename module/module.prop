@@ -1,6 +1,6 @@
 id=ios_auto_brightness
 name=iOS Auto Brightness
-version=v7.0.0-beta.2
-versionCode=70002
+version=v7.0.0-beta.3
+versionCode=70003
 author=reF1nd
 description=Open-source adaptive brightness with persistent per-lux preferences. KernelSU / altdb main display.
