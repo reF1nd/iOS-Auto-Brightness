@@ -55,7 +55,8 @@ Learning Store::decode(const std::string& text) const {
         if(i&&(p.lux<=l.points.back().lux||p.value<l.points.back().value))throw std::runtime_error("nonmonotonic learning data");
         l.points.push_back(p);
     }
-    if(s>>extra)throw std::runtime_error("trailing learning data");return l;
+    if(s>>extra)throw std::runtime_error("trailing learning data");
+    return l;
 }
 Learning Store::load(std::string& status) const {
     const auto p=path();

@@ -42,7 +42,8 @@ int main(int argc,char**argv) {
                     if(!hasUser||store.user!=user){store.user=user;hasUser=true;core.reset();core.learning=store.load(saveStatus);last={false,0,"user_changed"};}
                 } else if(cmd=="FRAME") {
                     Frame f;if(!(in>>f.now>>f.automatic>>f.screen>>f.lux>>f.back>>f.near>>f.temp>>f.battery>>f.charging>>f.current>>f.minimum>>f.maximum>>f.blocked))throw std::runtime_error("invalid frame");
-                    if(!hasUser)throw std::runtime_error("user required");last=core.step(f);
+                    if(!hasUser)throw std::runtime_error("user required");
+                    last=core.step(f);
                 } else if(cmd=="HOLD") {int64_t now;if(!(in>>now))throw std::runtime_error("missing time");core.hold(now);last={false,0,"user_adjustment"};
                 } else if(cmd=="EVENT") {
                     int64_t time;double lux,value;if(!(in>>time>>lux>>value)||!hasUser)throw std::runtime_error("invalid event");
@@ -51,7 +52,8 @@ int main(int argc,char**argv) {
                         try{store.save(core.learning);saveStatus="saved";}catch(const std::exception&e){core.learning=previous;saveStatus=std::string("save_failed: ")+e.what();throw;}
                     }else {std::cout<<"{\"ok\":true,\"accepted\":false}"<<std::endl;continue;}
                 } else if(cmd=="CLEAR") {
-                    if(!hasUser)throw std::runtime_error("user required");store.save({},true);core.learning={};saveStatus="cleared";
+                    if(!hasUser)throw std::runtime_error("user required");
+                    store.save({},true);core.learning={};saveStatus="cleared";
                 } else if(cmd=="CONFIG") {
                     std::string path;if(!(in>>std::quoted(path)))throw std::runtime_error("missing config file");
                     auto proposed=Config::parse(readFile(path));atomicWrite(conf,proposed.serialize());core.config=proposed;core.reset();configStatus="applied";
