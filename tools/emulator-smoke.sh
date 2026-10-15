@@ -92,37 +92,33 @@ assert s.get('heartbeat')=='fresh' and s.get('bridge_process')=='alive' and s.ge
 assert s.get('health')=='attention_required',s
 PY
 
-# Exercise explicit learning without relying on calibrated nits or OEM event APIs.
+# Reference policy learns slider observations directly, without the old arm window.
 adb emu sensor set light 100
-armed=0
-for _ in $(seq 1 30); do
-  if adb shell 'CLASSPATH=/data/local/tmp/iab-module/bridge.jar app_process /system/bin org.ref1nd.brightness.Bridge ctl learn-arm' > build/smoke-arm.json 2>/dev/null; then armed=1; break; fi
-  sleep 2
-done
-[[ "$armed" == 1 ]]
+sleep 6
 adb shell settings put system screen_brightness 171
 sleep 5
 adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-learned.json
 python3 - <<'PYCODE'
 import json
 s=json.load(open('build/smoke-learned.json'))
-assert s.get('ok') and s.get('storage')=='saved' and s.get('points'),s
+assert s.get('ok') and s.get('storage')=='saved_reference_curve' and s.get('points'),s
+assert s.get('control_policy')=='v68' and s.get('learning_model')=='bounded_curve_offset',s
 assert any(abs(p['lux']-100)<1 for p in s['points']),s
 assert not s.get('manual_learning_armed'),s
 PYCODE
 
-# Opt-in continuous compatibility learning: no per-adjustment arm is required.
-adb shell "sed -i 's/settings_learning=0/settings_learning=1/' /data/local/tmp/iab-state/config.conf"
-sleep 6
+# Another slider adjustment updates the observation without opting into the old
+# compatibility mode. Its reconstructed curve must change as well.
 adb shell settings put system screen_brightness 181
 sleep 6
 adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-compat-learned.json
 python3 - <<'PYCODE'
 import json
 before=json.load(open('build/smoke-learned.json'));after=json.load(open('build/smoke-compat-learned.json'))
-assert after.get('settings_learning') and after.get('storage')=='saved',after
+assert not after.get('settings_learning') and after.get('storage')=='saved_reference_curve',after
 assert max(p['time'] for p in after['points'])>max(p['time'] for p in before['points']),after
 assert after.get('event_status','').startswith('saved'),after
+assert after['curve']!=before['curve'],after
 PYCODE
 adb shell cmd thermalservice override-status 3
 sleep 3
