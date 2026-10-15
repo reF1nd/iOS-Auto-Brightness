@@ -24,7 +24,8 @@ public final class ProtectionPolicy {
         return "";
     }
     // Recovery requires positive evidence that only our temporary request was cleared.
-    // Unknown OEM formats, modifiers, dimming, HDR and other display sections fail closed.
+    // BCBC is a vendor brightness adjustment, not an ownership transfer. Unknown
+    // modifiers, dimming, HDR and other display sections still fail closed.
     public static boolean clearedTemporary(String dump) {
         String[] sections=dump.split("(?m)^Display Power Controller:\\s*$");
         String main=null;
@@ -35,7 +36,7 @@ public final class ProtectionPolicy {
             }
         }
         if(main==null)return false;
-        return Pattern.compile("(?m)^\\s*mBrightnessReason=automatic\\s*$").matcher(main).find()
+        return Pattern.compile("(?m)^\\s*mBrightnessReason=automatic(?:[ \\t]+\\[[ \\t]*bcbc[ \\t]*\\])?[ \\t]*$").matcher(main).find()
             && Pattern.compile("(?m)^\\s*mTemporaryScreenBrightness[=:]\\s*NaN\\s*$").matcher(main).find()
             && Pattern.compile("(?m)^\\s*mCachedBrightnessInfo.brightnessMaxReason\\s*=0\\s*$").matcher(main).find();
     }

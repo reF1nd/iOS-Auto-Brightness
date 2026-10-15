@@ -20,8 +20,9 @@ public final class ProtectionPolicyTest {
         check(p.update(15000,0,-1).equals("protection_unknown"),"unknown cap reason");
         String main="Display Power Controller:\n  mDisplayId=0\n  mBrightnessReason=automatic\n  mTemporaryScreenBrightness:NaN\n  mCachedBrightnessInfo.brightnessMaxReason =0\n";
         check(ProtectionPolicy.clearedTemporary(main),"confirmed lost temporary request");
+        check(ProtectionPolicy.clearedTemporary(main.replace("Reason=automatic","Reason=automatic [ bcbc ]")),"BCBC alone does not transfer ownership");
         check(ProtectionPolicy.clearedTemporary("Logical Display:\n  mDisplayId=0\n"+main),"preamble is not a second power controller");
-        for(String reason:new String[]{"automatic [ thermal ]","temporary","override","doze","automatic [ low_pwr ]","unknown"})
+        for(String reason:new String[]{"automatic [ thermal ]","temporary","override","doze","automatic [ low_pwr ]","unknown","automatic [ dim ]","automatic [ bcbc dim ]","automatic [ bcbc thermal ]","automatic [ bcbc unknown ]","temporary [ bcbc ]"})
             check(!ProtectionPolicy.clearedTemporary(main.replace("Reason=automatic","Reason="+reason)),"cannot recover protected or unknown output");
         check(!ProtectionPolicy.clearedTemporary(main.replace(":NaN",":0.1")),"active override must not be fought");
         check(!ProtectionPolicy.clearedTemporary(main.replace("Reason =0","Reason =1")),"cannot recover thermal cap");

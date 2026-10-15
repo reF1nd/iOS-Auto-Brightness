@@ -127,6 +127,9 @@ public final class Bridge implements SensorEventListener {
     }
     static final File BACKLIGHT_ROOT=new File("/sys/class/backlight");
     static void release(Context context,File state,File module) throws Exception {
+        // Restore permissions even if the display disappeared or framework IPC fails.
+        String boot=read(new File("/proc/sys/kernel/random/boot_id"),128).trim();
+        DirectBacklight.unlock(BACKLIGHT_ROOT,new File(state,"direct-output.properties"),boot);
         DisplayManager dm=(DisplayManager)context.getSystemService(Context.DISPLAY_SERVICE);
         Object global=Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null);
         Display main=dm.getDisplay(0);if(main==null)return;
@@ -212,7 +215,7 @@ public final class Bridge implements SensorEventListener {
                     &&Backlight.number(new File(BACKLIGHT_ROOT,"panel1-backlight/max_brightness"))==4095){node="panel0-backlight";verifiedPanel=true;}
                 else throw new IOException("explicit main-panel backlight.conf binding required");
             }
-            direct=new DirectBacklight(BACKLIGHT_ROOT,node,new File(state,"direct-output.properties"),displayId,bootId,verifiedPanel?this::panelRead:null);
+            direct=new DirectBacklight(BACKLIGHT_ROOT,node,new File(state,"direct-output.properties"),displayId,bootId,verifiedPanel?this::panelRead:null,BacklightLease.POSIX);
             outputStatus="verifying_mapping";
         }catch(Exception e){outputStatus="backlight_unavailable: "+rootCause(e);}
         loadSensorChoice();
@@ -399,6 +402,15 @@ public final class Bridge implements SensorEventListener {
                 ||(hasField(info,"isBrightnessOverrideByWindow")&&flag(info,"isBrightnessOverrideByWindow"))
                 ||integer(info,"highBrightnessMode")==2
                 ||(overridden&&number(info,"brightnessMaximum")<lastWrite))return false;
+        if(direct!=null&&direct.locked()&&overridden&&!interaction.waiting()&&!interaction.ours(now,adjusted(info))) {
+            // Framework auto/BCBC targets may move independently while we own the
+            // node. Only confirmed automatic output can retain that ownership;
+            // a drag, dim, override or unknown reason still takes the normal exit.
+            String dump=displayDump();
+            if(ProtectionPolicy.clearedTemporary(dump)) {
+                interaction.wrote(now,adjusted(info),adjusted(info));return false;
+            }
+        }
         if(!interaction.observe(now,adjusted(info),overridden))return false;
         // Restore only if our last raw value is still present. A new SystemUI write wins.
         release(context,state,module);if(direct!=null)direct.released();
@@ -416,9 +428,9 @@ public final class Bridge implements SensorEventListener {
         },"iab-interaction-check").start();
     }
     void clearOverride() throws Exception {
-        if(!observe&&(overridden||(direct!=null&&direct.owned())))release(context,state,module);
+        if(!observe&&(overridden||(direct!=null&&(direct.owned()||direct.locked()))))release(context,state,module);
         overridden=false;lastWrite=-1;
-        if(direct!=null&&direct.owned())direct.released();
+        if(direct!=null&&(direct.owned()||direct.locked()))direct.released();
     }
     void displayChanged() {
         if(closing.get())return;
@@ -743,6 +755,7 @@ public final class Bridge implements SensorEventListener {
             result.put("boot_id",bootId).put("bridge_pid",android.os.Process.myPid())
                 .put("bridge_start",Health.processStart(android.os.Process.myPid())).put("core_start",Health.processStart(result.optLong("core_pid",-1)))
                 .put("output_backend","direct_sysfs").put("output_status",outputStatus)
+                .put("backlight_write_locked",direct!=null&&direct.locked())
                 .put("driver_learning_status",direct==null||observe?"not_applicable":direct.learning.status)
                 .put("backlight_node",direct==null?"":direct.path()).put("backlight_requested",direct==null?-1:direct.requested())
                 .put("backlight_actual",direct==null?-1:direct.actual()).put("backlight_maximum",direct==null?-1:direct.maximum)
@@ -851,6 +864,9 @@ public final class Bridge implements SensorEventListener {
             org.json.JSONArray rows=new org.json.JSONArray();
             for(Backlight.Row row:Backlight.read(new File("/sys/class/backlight")))rows.put(new JSONObject().put("path",row.path).put("requested",row.requested).put("actual",row.actual).put("maximum",row.maximum));
             System.out.println(new JSONObject().put("ok",true).put("nodes",rows));return;
+        }
+        if(args.length==1&&args[0].equals("release")) {
+            DirectBacklight.unlock(BACKLIGHT_ROOT,new File("/data/adb/ios_auto_brightness/direct-output.properties"),read(new File("/proc/sys/kernel/random/boot_id"),128).trim());
         }
         Looper.prepareMainLooper();Context context=systemContext();
         if(args.length>=2&&(args[0].equals("sensors-get")||args[0].equals("sensors-save"))) {

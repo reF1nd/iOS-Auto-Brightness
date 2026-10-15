@@ -6,11 +6,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
-/** Cooperative sysfs writer. Never locks permissions or fights another writer. */
+/** Direct sysfs writer with an optional recoverable write-permission lease. */
 public final class DirectBacklight {
     public interface Readback {long read() throws IOException;}
     private final Readback readback;
     private final File node, journal;
+    private final BacklightLease lease;
     private float baselineFramework=Float.NaN;
     private final String display, boot;
     public final long maximum;
@@ -21,14 +22,23 @@ public final class DirectBacklight {
         this(root,name,journal,display,boot,null);
     }
     public DirectBacklight(File root,String name,File journal,String display,String boot,Readback readback) throws IOException {
+        this(root,name,journal,display,boot,readback,null);
+    }
+    public DirectBacklight(File root,String name,File journal,String display,String boot,Readback readback,BacklightLease.Access permissions) throws IOException {
         this.readback=readback;
         if(!name.matches("[A-Za-z0-9_-]+"))throw new IOException("invalid backlight node name");
         this.node=new File(root,name);this.journal=journal;this.display=display;this.boot=boot;
+        lease=permissions==null?null:new BacklightLease(root,name,permissionJournal(journal),boot,permissions);
         maximum=Backlight.number(new File(node,"max_brightness"));
         if(maximum<2||maximum>1000000||!new File(node,"brightness").canWrite())throw new IOException("backlight range or write access unavailable");
     }
     public String path(){return node.getPath();}
     public boolean owned(){return last>=0;}
+    public boolean locked(){return lease!=null&&lease.active();}
+    static File permissionJournal(File journal){return new File(journal.getParentFile(),"backlight-permissions.properties");}
+    public static synchronized void unlock(File root,File journal,String boot)throws IOException {
+        BacklightLease.restore(root,permissionJournal(journal),boot,BacklightLease.POSIX);
+    }
     public long requested(){return Backlight.number(new File(node,"brightness"));}
     public long actual(){try{return readback==null?Backlight.number(new File(node,"actual_brightness")):readback.read();}catch(IOException e){return -1;}}
     public static long units(float value,long maximum) {
@@ -41,6 +51,7 @@ public final class DirectBacklight {
         long raw=requested(),actual=actual();
         long liveMaximum=Backlight.number(new File(node,"max_brightness"));
         learning.sample(now,raw,actual,liveMaximum==maximum?maximum:-1,framework);
+        if(locked()&&!lease.intact()){abandon(now,"backlight_permissions_changed");return false;}
         if(liveMaximum!=maximum||raw<0||raw>maximum||actual<0||actual>maximum) {
             abandon(now,"backlight_readback_unavailable");return false;
         }
@@ -62,6 +73,7 @@ public final class DirectBacklight {
         }
     }
     private void abandon(long now,String reason) throws IOException {
+        if(lease!=null)lease.release();
         last=-1;stableAt=-1;baseline=-1;retryAt=now+2000;status=reason;Files.deleteIfExists(journal.toPath());
     }
     public void write(float target,float cap) throws IOException {
@@ -73,6 +85,7 @@ public final class DirectBacklight {
         long before=requested();
         if((owned()?before!=last:before!=baseline)||!close(actual(),before))throw new IOException("backlight ownership changed before write");
         if(owned()&&raw==last)return;
+        if(lease!=null)lease.acquire();
         Properties p=new Properties();p.setProperty("node",node.getName());p.setProperty("display",display);
         p.setProperty("boot",boot);p.setProperty("maximum",Long.toString(maximum));p.setProperty("last",Long.toString(raw));
         p.setProperty("readback",readback==null?"sysfs":"mi");p.setProperty("systemRaw",Long.toString(baseline));p.setProperty("framework",Float.toString(baselineFramework));
@@ -93,6 +106,7 @@ public final class DirectBacklight {
         restore(root,journal,display,boot,on,canRaise,framework,cap,null);
     }
     public static synchronized void restore(File root,File journal,String display,String boot,boolean on,boolean canRaise,float framework,float cap,Readback readback) throws IOException {
+        unlock(root,journal,boot);
         if(!journal.isFile())return;
         Properties p=new Properties();try(InputStream in=new FileInputStream(journal)){p.load(in);}
         try {
@@ -114,7 +128,7 @@ public final class DirectBacklight {
         }catch(IllegalArgumentException e){throw new IOException("invalid backlight recovery data",e);}
         finally{Files.deleteIfExists(journal.toPath());}
     }
-    public void released(){last=-1;stableAt=-1;baseline=-1;status="released";}
+    public void released()throws IOException {if(lease!=null)lease.release();last=-1;stableAt=-1;baseline=-1;status="released";}
     /** Framework -> HAL identity must be proven, never assume two normalized ranges match. */
     public static boolean identityMapping(String dump,String display) {
         try {
