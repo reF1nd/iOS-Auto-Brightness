@@ -48,15 +48,42 @@ public final class DirectBacklightTest {
             // A verified adapter must use the separate read-only driver API instead.
             final long[] driver={812};set(panel,"max_brightness",16383);set(panel,"brightness",812);set(panel,"actual_brightness",0);
             var vendor=new DirectBacklight(root.toFile(),"panel0",journal.toFile(),"main","boot",()->driver[0]);
-            check(!vendor.ready(20000,.048902072f)&&vendor.ready(21000,.048902072f),"bounded compositor compensation with independent driver readback");
+            check(!vendor.ready(20000,(812f/16383))&&vendor.ready(21000,(812f/16383)),"strict live mapping with independent driver readback");
             vendor.write(.04f,.4f);driver[0]=655;
-            check(vendor.ready(22000,.048902072f),"vendor readback validates raw write despite sysfs zero stub");
-            DirectBacklight.restore(root.toFile(),journal.toFile(),"main","boot",true,true,.048902072f,.4f,()->driver[0]);
+            check(vendor.ready(22000,(812f/16383)),"vendor readback validates raw write despite sysfs zero stub");
+            DirectBacklight.restore(root.toFile(),journal.toFile(),"main","boot",true,true,(812f/16383),.4f,()->driver[0]);
             check(Files.readString(panel.resolve("brightness")).trim().equals("812"),"unchanged framework restores exact original system node value");
-            vendor.released();driver[0]=812;vendor.ready(23000,.048902072f);vendor.ready(24000,.048902072f);vendor.write(.04f,.4f);
-            driver[0]=400;check(!vendor.ready(25000,.048902072f),"vendor thermal driver reduction must also yield");
-            driver[0]=-1;check(!vendor.ready(30000,.048902072f),"failed vendor readback never authorizes control");
+            vendor.released();driver[0]=812;vendor.ready(23000,(812f/16383));vendor.ready(24000,(812f/16383));vendor.write(.04f,.4f);
+            driver[0]=400;check(!vendor.ready(25000,(812f/16383)),"vendor thermal driver reduction must also yield");
+            driver[0]=-1;check(!vendor.ready(30000,(812f/16383)),"failed vendor readback never authorizes control");
             check(vendor.learning.protection.equals("backlight_readback_unavailable"),"failed readback immediately invalidates learning");
+            // Regression: stable framework 357 vs compensated raw/driver 384.
+            vendor.released();driver[0]=384;set(panel,"brightness",384);
+            var strict=new DirectBacklight(root.toFile(),"panel0",journal.toFile(),"main","boot",()->driver[0]);
+            check(!strict.ready(31000,357f/16383)&&!strict.ready(33000,357f/16383),"readback alone never bypasses generic mapping validation");
+            var verified=new DirectBacklight(root.toFile(),"panel0",journal.toFile(),"main","boot",()->driver[0],null,true);
+            check(verified.frameBrightness(357f/16383)==357f/16383,"unverified frame keeps framework baseline");
+            check(!verified.ready(34000,357f/16383),"verified panel still requires stable output");
+            driver[0]=385;set(panel,"brightness",385);
+            check(!verified.ready(34900,357f/16383)&&!verified.ready(35000,357f/16383),"node changes restart stability window");
+            check(verified.ready(35900,357f/16383),"proven scale accepts stable compensated output");
+            check(DirectBacklight.units(verified.frameBrightness(357f/16383),16383)==385,"first controller frame uses actual output");
+            verified.write(.01f,1);
+            check(verified.requested()==385,"first acquisition preserves live backlight instead of jumping to target");
+            verified.write(.02f,1);driver[0]=328;
+            check(verified.requested()==328&&verified.ready(36000,357f/16383),"subsequent ramp writes and verifies independent driver output");
+            check(DirectBacklight.units(verified.frameBrightness(357f/16383),16383)==328,"owned frames use module output");
+            verified.released();driver[0]=384;set(panel,"brightness",384);
+            verified.ready(37000,357f/16383);verified.ready(38000,357f/16383);
+            verified.write(.01f,300f/16383);driver[0]=300;
+            check(verified.requested()==300,"first acquisition still honors a lower system cap");
+            set(panel,"brightness",301);driver[0]=301;
+            check(!verified.ready(38100,357f/16383)&&!verified.owned(),"verified scale never ignores external writes");
+            check(!verified.ready(39000,357f/16383)&&verified.ready(40200,357f/16383),"external writer retry delay remains enforced");
+            driver[0]=200;check(!verified.ready(41000,357f/16383),"driver clamp still blocks verified adapter");
+            driver[0]=301;set(panel,"max_brightness",4095);
+            check(!verified.ready(43000,357f/16383),"changed panel range invalidates verified adapter");
+            try{new DirectBacklight(root.toFile(),"panel0",journal.toFile(),"main","boot",null,null,true);throw new AssertionError("missing driver");}catch(java.io.IOException expected){}
             String dump="DisplayDeviceInfo{uniqueId=\"main\"} mBrightness=[0, 0.2, 1], mBacklight=[0, 0.2, 1] DisplayDeviceInfo{uniqueId=\"rear\"} mBrightness=[0, 1], mBacklight=[0.1, 0.9]";
             check(DirectBacklight.identityMapping(dump,"main"),"verified mapping accepted");
             check(!DirectBacklight.identityMapping(dump,"rear")&&!DirectBacklight.identityMapping(dump,"missing"),"nonidentity or missing panel rejected");

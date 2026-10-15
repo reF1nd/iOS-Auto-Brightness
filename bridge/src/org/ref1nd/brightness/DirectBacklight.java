@@ -10,6 +10,7 @@ import java.util.*;
 public final class DirectBacklight {
     public interface Readback {long read() throws IOException;}
     private final Readback readback;
+    private final boolean verifiedScale;
     private final File node, journal;
     private final BacklightLease lease;
     private RandomAccessFile writer;
@@ -26,7 +27,12 @@ public final class DirectBacklight {
         this(root,name,journal,display,boot,readback,null);
     }
     public DirectBacklight(File root,String name,File journal,String display,String boot,Readback readback,BacklightLease.Access permissions) throws IOException {
-        this.readback=readback;
+        this(root,name,journal,display,boot,readback,permissions,false);
+    }
+    /** verifiedScale is only supplied by an independently identified panel adapter. */
+    public DirectBacklight(File root,String name,File journal,String display,String boot,Readback readback,BacklightLease.Access permissions,boolean verifiedScale) throws IOException {
+        if(verifiedScale&&readback==null)throw new IOException("verified scale requires independent driver readback");
+        this.readback=readback;this.verifiedScale=verifiedScale;
         if(!name.matches("[A-Za-z0-9_-]+"))throw new IOException("invalid backlight node name");
         this.node=new File(root,name);this.journal=journal;this.display=display;this.boot=boot;
         lease=permissions==null?null:new BacklightLease(root,name,permissionJournal(journal),boot,permissions);
@@ -46,6 +52,11 @@ public final class DirectBacklight {
         if(!Float.isFinite(value)||value<0||value>1)throw new IllegalArgumentException("invalid normalized brightness");
         return Math.round((double)value*maximum);
     }
+    /** Seed the controller from the verified live output even before its first write. */
+    public float frameBrightness(float framework) {
+        return (owned()||status.equals("direct_ready"))&&baseline>=0
+            ? (owned()?last:baseline)/(float)maximum : framework;
+    }
     private static boolean close(long a,long b){return a>=0&&b>=0&&Math.abs(a-b)<=1;}
     public boolean ready(long now,float framework) throws IOException {
         synchronized(DirectBacklight.class) {
@@ -61,10 +72,9 @@ public final class DirectBacklight {
         if(!close(actual,raw)){abandon(now,"driver_output_mismatch");return false;}
         if(owned()){status="direct_active";return true;}
         long expected=units(framework,maximum);
-        // The verified Xiaomi compositor applies a small compensation before sysfs.
-        // Keep it bounded; never fit a guessed global transform from a single sample.
-        long tolerance=readback==null?1:Math.max(16,Math.round(expected*.02));
-        if(Math.abs(raw-expected)>tolerance) {
+        // A proven panel scale does not require the OEM's final compensated output
+        // to equal its framework target. Unknown adapters still need a live match.
+        if(!verifiedScale&&Math.abs(raw-expected)>1) {
             stableAt=-1;status="backlight_mapping_mismatch";return false;
         }
         if(raw!=baseline){baseline=raw;stableAt=now;}
@@ -84,6 +94,8 @@ public final class DirectBacklight {
     public void write(float target,float cap) throws IOException {
         synchronized(DirectBacklight.class) {
         long raw=units(Math.min(target,cap),maximum);
+        // Acquire without a brightness step; following frames use the normal ramp.
+        if(verifiedScale&&!owned()&&baseline>=0)raw=Math.min(baseline,units(cap,maximum));
         if(raw<1)throw new IOException("refusing to blank an active display");
         if(Backlight.number(new File(node,"max_brightness"))!=maximum)throw new IOException("backlight range changed");
         // Recheck after IPC. If the system wrote in the meantime, leave its value alone.
