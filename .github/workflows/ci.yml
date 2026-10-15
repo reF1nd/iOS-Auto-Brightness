@@ -65,6 +65,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install --yes busybox
           python3 tests/release_test.py
+          python3 tests/start_service_test.py
+          HOT_TEST_BUSYBOX=/usr/bin/busybox python3 tests/start_service_test.py
           python3 tests/hot_update_test.py
           HOT_TEST_BUSYBOX=/usr/bin/busybox python3 tests/hot_update_test.py
       - name: Detect core implementation

@@ -19,17 +19,17 @@ const fields = [
   ['log_max_bytes','日志上限（字节）',65536,8388608,65536],['log_max_backups','日志备份份数',1,8,1],
 ];
 function note(text) { $('notice').textContent = text; }
-function exec(command) {
+function exec(command,timeoutMs=10000) {
   return new Promise((resolve,reject) => {
     if (!window.ksu?.exec) return reject(new Error('请使用支持 ksu.exec 的 Root 管理器 WebUI（Magisk 可使用兼容的 WebUI 宿主）。'));
     const key = `iab_${Date.now()}_${sequence++}`;
-    const timer = setTimeout(() => { delete window[key]; reject(new Error('服务响应超时')); },10000);
+    const timer = setTimeout(() => { delete window[key]; reject(new Error('操作响应超时，请刷新状态并查看诊断')); },timeoutMs);
     window[key] = (code,stdout,stderr) => {clearTimeout(timer);delete window[key];Number(code) === 0 ? resolve(stdout) : reject(new Error(stderr || stdout || `错误 ${code}`));};
     try {window.ksu.exec(command,'{}',key);} catch(e) {clearTimeout(timer);delete window[key];reject(e);}
   });
 }
 async function ctl(command,payload) {
-  const result = JSON.parse(await exec(`sh ${quote(`${root}/control.sh`)} ${quote(command)}${payload === undefined ? '' : ` ${quote(payload)}`}`));
+  const result = JSON.parse(await exec(`sh ${quote(`${root}/control.sh`)} ${quote(command)}${payload === undefined ? '' : ` ${quote(payload)}`}`,command==='start'?60000:10000));
   if (!result.ok) throw new Error(result.error || '操作失败');
   return result;
 }
@@ -156,6 +156,13 @@ async function save(text) {
 $('save').onclick=()=>action(async()=>{if(rawInvalid)throw new Error('请先修复原始配置格式');for(const [key] of fields){const i=$(key);if(!i.checkValidity())throw new Error(`请检查 ${key}`);}await save($('config').value);});
 $('saveRaw').onclick=()=>action(()=>save($('config').value));
 $('refresh').onclick=()=>refresh(true);
+$('startService').onclick=()=>action(async()=>{
+  note('正在启动服务并核对运行状态，请稍候……');
+  const result=await ctl('start');
+  await ctl('status');
+  await refresh(true);
+  note(result.state==='already_running'?'服务已在运行，无需重复启动。':'服务已启动，后端就绪。');
+});
 $('defaults').onclick=()=>action(async()=>{dirty=true;setConfig(await exec(`cat ${quote(`${root}/default.conf`)}`));note('已载入默认值，点击保存并应用后生效。');});
 $('clear').onclick=()=>{if(confirm('清除当前用户、当前光感来源的学习记录？基础曲线保持不变。'))action(async()=>{await ctl('learn-clear');await refresh();note('学习记录已清除并保存。');});};
 $('export').onclick=()=>action(async()=>{const data=(await ctl('learn-export')).data;const url=URL.createObjectURL(new Blob([data],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download='ios-brightness-learning.dat';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);note('已导出当前用户及光感来源的学习数据。');});

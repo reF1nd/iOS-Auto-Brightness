@@ -15,6 +15,7 @@ if [ "$1" = stop ]; then touch /data/adb/ios_auto_brightness/stop; fi
 STATE=/data/adb/ios_auto_brightness
 export CLASSPATH="$MODDIR/bridge.jar"
 case "$1" in
+  start) exec sh "$MODDIR/start-service.sh" ;;
   log-read)
     exec 8>"$STATE/log.lock"; flock 8 || exit 1
     # Oldest to newest, bounded output; includes context immediately after rotation.

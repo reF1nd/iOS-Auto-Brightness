@@ -40,6 +40,7 @@ while [ "$(getprop sys.boot_completed)" != 1 ]; do
   [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || exit 0
   sleep 2
 done
+[ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || exit 0
 boot_id=$(cat /proc/sys/kernel/random/boot_id) || exit 1
 [ -n "$boot_id" ] || exit 1
 if [ "$(cat "$STATE/first-install-boot" 2>/dev/null)" = "$boot_id" ]; then

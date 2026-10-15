@@ -14,7 +14,7 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   }
   const document={hidden:false,getElementById(id){if(!elements.has(id)){const e=new Element();e.id=id;}return elements.get(id);},
     createElement(tag){return new Element(tag);},createElementNS(ns,tag){return new Element(tag);},querySelectorAll(){return [];}};
-  let online=true, logText='recent log';
+  let online=true, logText='recent log', startError='';
   let config=await readFile(new URL('../module/default.conf',import.meta.url),'utf8');
   config=config.replace('manual_gamma=2.2','manual_gamma=2.7');
   const commands=[];
@@ -30,6 +30,7 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
     if(command.includes("'log-clear'")){window[key](0,'{"ok":true}','');return;}
     if(command.includes("'sensors-get'")){window[key](0,JSON.stringify({ok:true,data:'front=\nback=\nsysfs=\n',sensors:['Exact Light']}),'');return;}
     if(command.includes("'sensors-save'")){window[key](0,'{"ok":true}','');return;}
+    if(command.includes("'start'")){if(startError){window[key](0,JSON.stringify({ok:false,error:startError}),'');return;}const state=online?'already_running':'started';online=true;window[key](0,JSON.stringify({ok:true,state}),'');return;}
     if(!online){window[key](1,'','service unavailable');return;}
     if(command.includes("'learn-arm'")){window[key](0,'{"ok":true}','');return;}
     if(command.includes("'config-set'")) {
@@ -97,6 +98,18 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   elements.get('config').value='alpha_fast=0.5\n';elements.get('config').listeners.input();
   await elements.get('saveRaw').onclick();assert.equal(config,'alpha_fast=0.5\n');
   assert.match(elements.get('notice').textContent,/服务恢复后生效/);
+  const starts=()=>commands.filter(c=>c.includes("'start'")).length;
+  assert.equal(starts(),0,'offline polling must never auto-start');
+  startError='模块仍被禁用，请先启用';
+  await elements.get('startService').onclick();
+  assert.match(elements.get('notice').textContent,/仍被禁用/);
+  assert.equal(online,false);
+  startError='';
+  await elements.get('startService').onclick();
+  assert.match(elements.get('notice').textContent,/服务已启动/);
+  assert.ok(elements.get('status').children.length>0);
+  await elements.get('startService').onclick();
+  assert.match(elements.get('notice').textContent,/无需重复启动/);
   elements.get('config').value='alpha_fast=0.5\nalpha_fast=0.6';elements.get('config').listeners.input();
   await elements.get('save').onclick();assert.equal(config,'alpha_fast=0.5\n');
 

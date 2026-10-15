@@ -29,7 +29,7 @@ fi
 chmod 600 "$STATE"/*.conf "$STATE"/*.dat 2>/dev/null
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/bin/ios_brightness_daemon" 0 0 0755
-for f in service.sh control.sh check_status.sh uninstall.sh hot-update.sh; do set_perm "$MODPATH/$f" 0 0 0755; done
+for f in service.sh control.sh check_status.sh uninstall.sh hot-update.sh start-service.sh; do set_perm "$MODPATH/$f" 0 0 0755; done
 # Record first installation even if the hot-update helper cannot run. An active
 # directory alone is not evidence of activation: managers may create it early.
 ACTIVE=/data/adb/modules/ios_auto_brightness
