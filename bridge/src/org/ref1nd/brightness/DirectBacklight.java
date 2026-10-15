@@ -14,6 +14,7 @@ public final class DirectBacklight {
     private float baselineFramework=Float.NaN;
     private final String display, boot;
     public final long maximum;
+    public final DriverOutputGuard learning=new DriverOutputGuard();
     private long last=-1, stableAt=-1, retryAt=0, baseline=-1;
     public String status="verifying_mapping";
     public DirectBacklight(File root,String name,File journal,String display,String boot) throws IOException {
@@ -38,7 +39,9 @@ public final class DirectBacklight {
     public boolean ready(long now,float framework) throws IOException {
         synchronized(DirectBacklight.class) {
         long raw=requested(),actual=actual();
-        if(Backlight.number(new File(node,"max_brightness"))!=maximum||raw<0||raw>maximum||actual<0||actual>maximum) {
+        long liveMaximum=Backlight.number(new File(node,"max_brightness"));
+        learning.sample(now,raw,actual,liveMaximum==maximum?maximum:-1,framework);
+        if(liveMaximum!=maximum||raw<0||raw>maximum||actual<0||actual>maximum) {
             abandon(now,"backlight_readback_unavailable");return false;
         }
         if(owned()&&raw!=last){abandon(now,"external_backlight_write");return false;}

@@ -25,6 +25,8 @@ public final class DirectBacklightTest {
             check(!d.ready(6100,.1f)&&d.ready(7100,.1f),"recapture requires fresh stable system mapping");
             d.write(.2f,1);set(panel,"actual_brightness",100);
             check(!d.ready(7200,.1f),"driver cap prevents continued writes even when requested value is ours");
+            check(d.learning.protection.isEmpty()&&!d.learning.learningReady(7200),"first mismatch pauses writing and saving without destroying learning history");
+            check(!d.ready(7700,.1f)&&d.learning.protection.equals("driver_output_mismatch"),"stable hidden cap becomes learning protection");
             set(panel,"brightness",100);set(panel,"actual_brightness",100);
             d.ready(10000,.1f);check(d.ready(11000,.1f),"mapping settles after driver recovery");
             d.write(.2f,1);set(panel,"actual_brightness",200);
@@ -54,6 +56,7 @@ public final class DirectBacklightTest {
             vendor.released();driver[0]=812;vendor.ready(23000,.048902072f);vendor.ready(24000,.048902072f);vendor.write(.04f,.4f);
             driver[0]=400;check(!vendor.ready(25000,.048902072f),"vendor thermal driver reduction must also yield");
             driver[0]=-1;check(!vendor.ready(30000,.048902072f),"failed vendor readback never authorizes control");
+            check(vendor.learning.protection.equals("backlight_readback_unavailable"),"failed readback immediately invalidates learning");
             String dump="DisplayDeviceInfo{uniqueId=\"main\"} mBrightness=[0, 0.2, 1], mBacklight=[0, 0.2, 1] DisplayDeviceInfo{uniqueId=\"rear\"} mBrightness=[0, 1], mBacklight=[0.1, 0.9]";
             check(DirectBacklight.identityMapping(dump,"main"),"verified mapping accepted");
             check(!DirectBacklight.identityMapping(dump,"rear")&&!DirectBacklight.identityMapping(dump,"missing"),"nonidentity or missing panel rejected");

@@ -290,7 +290,7 @@ public final class Bridge implements SensorEventListener {
         }
         boolean ready=manual.sample(now,eligible&&protectionReason.isEmpty(),value);
         eventStatus=manual.status;
-        if(!ready)return;
+        if(!ready||!driverLearningReady(now))return;
         if(learningLux.stillStable(manual.wall,manual.lux,now,System.currentTimeMillis())) {
             JSONObject saved=request("EVENT "+manual.wall+" "+manual.lux+" "+manual.value);
             eventStatus=saved.has("accepted")?"rejected_unstable":"saved_"+manual.origin;
@@ -609,7 +609,8 @@ public final class Bridge implements SensorEventListener {
                 pending=new JSONObject().put("time",time(newest,"timeStamp")).put("lux",chosenLux).put("value",toBacklight(number(newest,"brightness")));
                 pendingAt=now;eventStatus="pending";request("HOLD "+now);clearOverride();
             }
-            if(pending!=null&&!interaction.waiting()&&now-pendingAt>=1500) {
+            if(pending!=null&&now-pendingAt>10000){pending=null;eventStatus="discarded_driver_confirmation_timeout";}
+            if(pending!=null&&!interaction.waiting()&&now-pendingAt>=1500&&driverLearningReady(eventNow)) {
                 if(canLearn&&learningLux.stillStable(pending.getLong("time"),(float)pending.getDouble("lux"),eventNow,wallNow)) {
                     JSONObject learned=request("EVENT "+pending.getLong("time")+" "+pending.getDouble("lux")+" "+pending.getDouble("value"));
                     eventStatus=learned.has("accepted")?"rejected_unstable":"saved";
@@ -622,6 +623,9 @@ public final class Bridge implements SensorEventListener {
         }
     }
     static String rootCause(Throwable e){while(e.getCause()!=null)e=e.getCause();return e.toString();}
+    boolean driverLearningReady(long now) {
+        return observe||direct==null||direct.learning.learningReady(now);
+    }
     void tick() {
         if(closing.get())return;
         long now=SystemClock.elapsedRealtime();heartbeat=now;nextTickAt=now;wakeQueued=false;
@@ -631,6 +635,7 @@ public final class Bridge implements SensorEventListener {
             if(currentUser!=user||currentSerial!=userSerial) {
                 clearOverride();user=currentUser;userSerial=currentSerial;pending=null;lastEvent=System.currentTimeMillis();
                 learningLux.reset();manual.cancel();settingsLearning.reset();interaction.reset();
+                if(direct!=null)direct.learning.reset();
                 result=request("USER "+userSerial);
                 File legacy=new File(state,"legacy-offset.dat");
                 if(user==0&&(learningScope.isEmpty()||learningScope.equals("default"))&&result.optString("storage").equals("new")&&legacy.isFile())result=request("MIGRATE "+JSONObject.quote(legacy.getPath()));
@@ -665,11 +670,11 @@ public final class Bridge implements SensorEventListener {
             brightnessMaxReason=hasField(info,"brightnessMaxReason")?integer(info,"brightnessMaxReason"):-1;
             protectionReason=protection.update(now,thermalStatus,ProtectionPolicy.capReason(android.os.Build.VERSION.SDK_INT,hasField(info,"brightnessMaxReason"),brightnessMaxReason));
             if(automatic&&on&&direct!=null)probeOutput(now);
-            else {outputSafe=false;outputVerifiedAt=-10000;outputEpoch++;}
+            else {outputSafe=false;outputVerifiedAt=-10000;outputEpoch++;if(direct!=null)direct.learning.reset();}
             boolean directReady=!observe&&direct!=null&&automatic&&on&&direct.ready(now,current);
             if(direct!=null)outputStatus=direct.status;
-            if(automatic&&on&&direct!=null&&(outputStatus.equals("driver_output_mismatch")||outputStatus.equals("backlight_readback_unavailable")))
-                protectionReason=outputStatus;
+            if(!observe&&automatic&&on&&direct!=null&&protectionReason.isEmpty())
+                protectionReason=direct.learning.protection;
             // Direct writes bypass framework application of limits; require a cap reason
             // plus a recent unmodified automatic output and verified driver mapping.
             if(brightnessMaxReason<0)outputStatus="direct_cap_reason_unavailable";
@@ -734,6 +739,7 @@ public final class Bridge implements SensorEventListener {
             result.put("boot_id",bootId).put("bridge_pid",android.os.Process.myPid())
                 .put("bridge_start",Health.processStart(android.os.Process.myPid())).put("core_start",Health.processStart(result.optLong("core_pid",-1)))
                 .put("output_backend","direct_sysfs").put("output_status",outputStatus)
+                .put("driver_learning_status",direct==null||observe?"not_applicable":direct.learning.status)
                 .put("backlight_node",direct==null?"":direct.path()).put("backlight_requested",direct==null?-1:direct.requested())
                 .put("backlight_actual",direct==null?-1:direct.actual()).put("backlight_maximum",direct==null?-1:direct.maximum)
                 .put("protection_signals",hasField(info,"brightnessMaxReason")?"thermal_and_cap_reason":"thermal_and_system_cap_only")

@@ -27,3 +27,5 @@ java -cp build/bridge/classes:build/bridge/test-classes InteractionGuardTest
 
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/DirectBacklightTest.java
 java -cp build/bridge/classes:build/bridge/test-classes DirectBacklightTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/DriverOutputGuardTest.java
+java -cp build/bridge/classes:build/bridge/test-classes DriverOutputGuardTest
