@@ -8,7 +8,9 @@ if [ "${IAB_CONTROL_SHELL_READY:-}" != "$$" ]; then
   echo 'Root manager BusyBox is required' >&2
   exit 1
 fi
-MODDIR=${0%/*}
+MODDIR=$(cd "${0%/*}" && pwd -P) || exit 1
+# Never retain a root manager's temporary installer working directory.
+cd / || exit 1
 if [ "$1" = stop ]; then touch /data/adb/ios_auto_brightness/stop; fi
 STATE=/data/adb/ios_auto_brightness
 export CLASSPATH="$MODDIR/bridge.jar"

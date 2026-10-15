@@ -243,6 +243,9 @@ hot_prepare() {
 }
 
 [ "$1" != --library ] || return 0
+# Installer cwd (e.g. /dev/tmp) is removed on completion. Android's Java runtime
+# may crash in System_specialProperties when getcwd() fails in a detached child.
+cd / || exit 1
 if [ "${IAB_UPDATE_SHELL_READY:-}" != "$$" ]; then
   export IAB_UPDATE_SHELL_READY=$$ ASH_STANDALONE=1
   for IAB_BB in /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox /data/adb/magisk/busybox; do

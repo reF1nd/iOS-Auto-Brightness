@@ -10,7 +10,9 @@ if [ "${IAB_SHELL_READY:-}" != "$$" ]; then
   echo 'Root manager BusyBox is required for the supervisor lock' >&2
   exit 1
 fi
-MODDIR=${0%/*}
+MODDIR=$(cd "${0%/*}" && pwd -P) || exit 1
+# Never retain a root manager's temporary installer working directory.
+cd / || exit 1
 STATE=/data/adb/ios_auto_brightness
 [ ! -L "$STATE" ] || exit 1
 umask 077

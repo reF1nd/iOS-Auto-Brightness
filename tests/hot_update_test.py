@@ -49,6 +49,8 @@ class HotUpdateTest(unittest.TestCase):
         chcon.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}', IAB_BB=str(self.bb))
         self.children = []
+        self.installer_cwd = self.root / 'installer-tmp'
+        self.installer_cwd.mkdir()
         self.fake_process(124, 123, 400, ['sh', 'install.sh'])
         self.fake_process(123, 1, 300, ['renamed-manager', 'module', 'install', '/fixture.zip'])
 
@@ -106,6 +108,8 @@ while [ ! -e "$state/stop" ]; do sleep 0.1; done
 ''')
         (path / 'control.sh').write_text(f'''#!/bin/sh
 state={shlex.quote(str(self.state))}
+# Model ART's startup dependency on a valid working directory.
+readlink /proc/$$/cwd | grep -q ' (deleted)$' && exit 1
 case "$1" in
 stop) touch "$state/stop"; echo '{{"ok":true}}' ;;
 health) [ -f "$state/running" ] && echo '{{"health":"healthy"}}' ;;
@@ -133,7 +137,7 @@ esac
     def prepare(self):
         result = subprocess.run(['bash', '-c', 'export IAB_UPDATE_SHELL_READY=$$; exec "$@"',
                                  'fixture'] + SHELL + [str(self.script), 'prepare', str(self.stage), '124', '123', '/fixture.zip', 'true'],
-                                env=self.env, capture_output=True, text=True, timeout=70)
+                                env=self.env, cwd=self.installer_cwd, capture_output=True, text=True, timeout=70)
         return result
 
     def wait_for(self, predicate, seconds=10):
@@ -201,6 +205,7 @@ esac
         self.assertTrue((self.active / 'update').exists())
         (self.active / 'update').write_text('native marker')
         (self.stage / 'customize.sh').unlink()  # real KSU post-customize cleanup
+        self.installer_cwd.rmdir()  # detached processes must not retain this cwd
         self.assertFalse((self.active / 'customize.sh').exists())
         # Reused PID must not be mistaken for the original installer.
         self.fake_process(123, 1, 999, ['unrelated'])
