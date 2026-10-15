@@ -80,7 +80,7 @@ jobs:
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
           python3 tools/release.py notes "$RELEASE_TAG" > release-notes.md
-          printf '\n\nSource: `%s`\n\n[Build and verification](https://github.com/%s/actions/runs/%s)\n' \
+          printf '\n\nSource: %s\n\n[Build and verification](https://github.com/%s/actions/runs/%s)\n' \
             "$SOURCE_SHA" "$GH_REPO" "$GITHUB_RUN_ID" >> release-notes.md
       - name: Upload verified assets, then publish
         run: |
