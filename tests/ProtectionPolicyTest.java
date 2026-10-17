@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import org.ref1nd.brightness.ProtectionPolicy;
 import org.ref1nd.brightness.SensorChoice;
+import org.ref1nd.brightness.OutputProbeGuard;
 public final class ProtectionPolicyTest {
     static void check(boolean b,String message){if(!b)throw new AssertionError(message);}
     public static void main(String[] args) throws Exception {
@@ -33,6 +34,17 @@ public final class ProtectionPolicyTest {
         for(String reason:new String[]{"doze","override","automatic [ thermal ]","automatic [ unknown ]","automatic [ bcbc low_pwr ]"})
             check(!ProtectionPolicy.referenceOutput(main.replace("Reason=automatic","Reason="+reason)),"reference retains explicit protection boundaries");
         check(!ProtectionPolicy.referenceOutput(main.replace("Reason =0","Reason =1"))&&!ProtectionPolicy.referenceOutput(main+main),"cap and ambiguous reference controller rejected");
+        for(String reason:new String[]{"automatic","automatic [ dim ]","automatic [ bcbc dim ]","temporary"})
+            check(ProtectionPolicy.referenceOutputResult(main.replace("Reason=automatic","Reason="+reason))==OutputProbeGuard.Result.SAFE,"known unprotected reference output");
+        for(String reason:new String[]{"doze","override","automatic [ thermal ]","automatic [ hdr ]","automatic [ bcbc low_pwr ]"})
+            check(ProtectionPolicy.referenceOutputResult(main.replace("Reason=automatic","Reason="+reason))==OutputProbeGuard.Result.UNSAFE,"positive protection evidence is explicit unsafe");
+        for(String dump:new String[]{null,"",main+main,main.replace("mDisplayId=0","mDisplayId=1"),main.replace("Reason=automatic","Reason=future_reason"),main.replace("Reason=automatic","Reason=automatic [ vendor_future ]"),main.replace("brightnessMaxReason =0","brightnessMaxReason =-1"),main.replace("brightnessMaxReason =0","brightnessMaxReason =?"),main.replace("mCachedBrightnessInfo.brightnessMaxReason =0\n","")})
+            check(ProtectionPolicy.referenceOutputResult(dump)==OutputProbeGuard.Result.UNKNOWN,"missing or unknown information must not fabricate an unsafe output event");
+        check(ProtectionPolicy.referenceOutputResult(main.replace("Reason =0","Reason =1"))==OutputProbeGuard.Result.UNSAFE,"explicit cap reason remains unsafe");
+        check(ProtectionPolicy.referenceLearningOutput(main)&&ProtectionPolicy.referenceLearningOutput(main.replace("Reason=automatic","Reason=automatic [ bcbc ]")),"ordinary automatic output permits settled learning");
+        for(String reason:new String[]{"automatic [ dim ]","automatic [ bcbc dim ]","temporary","temporary [ bcbc ]","override","automatic [ thermal ]"})
+            check(!ProtectionPolicy.referenceLearningOutput(main.replace("Reason=automatic","Reason="+reason)),"DIM, active slider and protection are not a settled learning baseline");
+        check(!ProtectionPolicy.referenceLearningOutput(main.replace(":NaN",":0.1")),"pending temporary slider value must finish before learning");
         check(SensorChoice.luxSensor(5,"Ambient Light","android.sensor.light"),"standard calibrated lux");
         check(SensorChoice.luxSensor(33171055,"Rear ALS","vendor.sensor.back_lux"),"vendor declared lux");
         check(!SensorChoice.luxSensor(33171111,"Ambient Light Raw Data","vendor.sensor.ambientlight.raw"),"raw channels are not lux");

@@ -29,5 +29,9 @@ javac -cp build/bridge/classes -d build/bridge/test-classes tests/DirectBackligh
 java -cp build/bridge/classes:build/bridge/test-classes DirectBacklightTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/DriverOutputGuardTest.java
 java -cp build/bridge/classes:build/bridge/test-classes DriverOutputGuardTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/OutputProbeGuardTest.java
+java -cp build/bridge/classes:build/bridge/test-classes OutputProbeGuardTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/ReferenceSliderSamplingTest.java
+java -cp build/bridge/classes:build/bridge/test-classes ReferenceSliderSamplingTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/BacklightLeaseTest.java
 java -cp build/bridge/classes:build/bridge/test-classes BacklightLeaseTest

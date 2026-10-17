@@ -42,6 +42,20 @@ public final class DriverOutputGuardTest {
         check(!g.learningReady(8000),"new screen/user session starts unverified");
         g.sample(7900,400,400,1000,.4f);
         check(!g.learningReady(7900),"clock rollback does not count as stability");
+        g.reset();
+        g.sample(9000,200,250,250,1000,.4f);
+        check(g.protection.isEmpty()&&!g.learningReady(9000),"request changing across driver read is not a clamp");
+        g.sample(9800,250,300,300,1000,.4f);
+        check(g.protection.isEmpty(),"repeated torn snapshots never accumulate stable mismatch time");
+        g.sample(10600,300,300,300,1000,.4f);
+        check(!g.learningReady(10600),"first coherent recovery restarts confirmation");
+        g.sample(11400,300,300,300,1000,.4f);
+        check(g.learningReady(11400),"800ms control cadence can confirm stable output");
+        g.sample(12200,400,301,400,1000,.4f);
+        g.sample(13000,400,302,400,1000,.4f);
+        check(g.protection.isEmpty(),"slowly moving driver must not be mistaken for a stationary clamp");
+        g.sample(13800,400,302,400,1000,.4f);
+        check(g.protection.equals("driver_output_mismatch"),"unchanged driver mismatch over one control period is confirmed");
         System.out.println("Driver learning ramp, clamp, recovery, stale samples and session checks passed");
     }
 }

@@ -27,7 +27,9 @@ inline double referenceBrightness(double nits) {
 inline double referenceNits(double lux) {
     if(!std::isfinite(lux)||lux<0)throw std::runtime_error("invalid reference lux");
     if(lux<=.5)return .222+lux*1.556;
-    if(lux<=2)return 1+std::log(lux)/std::log(2)*2;
+    // Keep both neighbouring endpoints while repairing v6.8's discontinuity:
+    // its log(lux)/log(2) branch fell below zero just above 0.5 lux.
+    if(lux<=2)return 1+std::log(lux/.5)/std::log(4)*2;
     if(lux<=10)return 3+std::log(lux/2)/std::log(5)*12;
     if(lux<=100)return 15+std::log(lux/10)/std::log(10)*85;
     if(lux<=1000)return 100+std::log(lux/100)/std::log(10)*200;

@@ -55,7 +55,7 @@ int main(int argc,char**argv) {
             rusage usage{};getrusage(RUSAGE_SELF,&usage);
             const double cpu=usage.ru_utime.tv_sec+usage.ru_utime.tv_usec/1e6+usage.ru_stime.tv_sec+usage.ru_stime.tv_usec/1e6;
             const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
-            std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"settled\":"<<(core.settled()?"true":"false")<<",\"ambient_guard\":"<<(core.ambientGuard()?"true":"false")<<",\"fast_dark\":"<<(core.fastDark()?"true":"false")<<",\"alpha\":"<<core.alpha()<<",\"desired\":"<<core.desired()<<",\"night_scale\":"<<core.nightScale()<<",\"points\":[";
+            std::ostringstream o;o<<std::setprecision(10)<<"{\"ok\":true,\"apply\":"<<(last.apply?"true":"false")<<",\"target\":"<<last.value<<",\"reason\":"<<jsonString(last.reason)<<",\"lux\":"<<core.smoothLux()<<",\"user\":"<<store.user<<",\"profile\":"<<jsonString(store.profile)<<",\"storage\":"<<jsonString(saveStatus)<<",\"config_status\":"<<jsonString(configStatus)<<",\"settled\":"<<(core.settled()?"true":"false")<<",\"animating\":"<<(core.animating()?"true":"false")<<",\"ambient_guard\":"<<(core.ambientGuard()?"true":"false")<<",\"fast_dark\":"<<(core.fastDark()?"true":"false")<<",\"alpha\":"<<core.alpha()<<",\"desired\":"<<core.desired()<<",\"night_scale\":"<<core.nightScale()<<",\"points\":[";
             bool comma=false;for(auto&p:core.learning.points){if(comma)o<<',';comma=true;o<<"{\"lux\":"<<p.lux<<",\"brightness\":"<<p.value<<",\"time\":"<<p.time<<'}';}
             o<<"],\"legacy_offset\":"<<core.learning.legacy_offset<<",\"local_hour\":"<<core.frame().local_hour<<",\"curve\":[";
             for(int i=0;i<=80;i++){double lux=std::expm1(i*std::log(100001.0)/80);if(i)o<<',';o<<'['<<lux<<','<<core.base(lux)<<','<<core.target(lux)<<']';}
@@ -71,6 +71,11 @@ int main(int argc,char**argv) {
                     std::string policy;in>>policy;end();
                     if(policy!="v68"||hasUser||core.reference)throw std::runtime_error("policy must precede user and be set once");
                     core.reference=true;core.profile.id+="-v68curve2";store.profile=core.profile.id;core.reset();
+                } else if(cmd=="OUTPUT_PAUSE") {
+                    end();core.pauseOutput();last.apply=false;last.reason="output_wait";
+                } else if(cmd=="SLIDER_BASELINE") {
+                    int value;if(!(in>>value)||value<0||value>255||!hasUser)throw std::runtime_error("invalid slider baseline");end();
+                    core.sliderBaseline(value);
                 } else if(cmd=="SLIDER") {
                     int value;int64_t wall;if(!(in>>value>>wall)||!hasUser)throw std::runtime_error("invalid slider");end();
                     auto previous=core;

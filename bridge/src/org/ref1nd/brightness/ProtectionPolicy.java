@@ -42,18 +42,47 @@ public final class ProtectionPolicy {
     }
     /** v6.8 owns automatic brightness through timeout DIM and slider requests. */
     public static boolean referenceOutput(String dump) {
+        return referenceOutputResult(dump)==OutputProbeGuard.Result.SAFE;
+    }
+    private static String mainController(String dump) {
+        if(dump==null)return null;
         String[] sections=dump.split("(?m)^Display Power Controller:\\s*$");
         String main=null;
         for(int i=1;i<sections.length;i++)if(Pattern.compile("(?m)^\\s*mDisplayId=0\\s*$").matcher(sections[i]).find()) {
-            if(main!=null)return false;main=sections[i];
+            if(main!=null)return null;main=sections[i];
         }
-        if(main==null)return false;
-        Matcher reason=Pattern.compile("(?m)^\\s*mBrightnessReason=(automatic|temporary)(?:[ \\t]+\\[([^\\]]*)\\])?[ \\t]*$").matcher(main);
-        if(!reason.find())return false;
+        return main;
+    }
+    /** Missing/changed dump formats are waiting, not proof of a protection event. */
+    public static OutputProbeGuard.Result referenceOutputResult(String dump) {
+        String main=mainController(dump);
+        if(main==null)return OutputProbeGuard.Result.UNKNOWN;
+        Matcher reason=Pattern.compile("(?m)^\\s*mBrightnessReason=([a-z_]+)(?:[ \\t]+\\[([^\\]]*)\\])?[ \\t]*$").matcher(main);
+        if(!reason.find())return OutputProbeGuard.Result.UNKNOWN;
+        String source=reason.group(1);
         String modifiers=reason.group(2);
-        if(modifiers!=null)for(String modifier:modifiers.trim().split("\\s+"))
-            if(!modifier.isEmpty()&&!modifier.equals("dim")&&!modifier.equals("bcbc"))return false;
-        return Pattern.compile("(?m)^\\s*mCachedBrightnessInfo.brightnessMaxReason\\s*=0\\s*$").matcher(main).find();
+        if(reason.find())return OutputProbeGuard.Result.UNKNOWN;
+        if(source.matches("manual|doze|doze_default|override|override_doze|boost|screen_off|off|offload|follower|automatic_off_display|screen_off_brightness_sensor"))
+            return OutputProbeGuard.Result.UNSAFE;
+        boolean unknown=!source.equals("automatic")&&!source.equals("temporary");
+        if(modifiers!=null)for(String modifier:modifiers.trim().split("\\s+")) {
+            if(modifier.matches("thermal|throttled|throt|low_pwr|hdr"))return OutputProbeGuard.Result.UNSAFE;
+            if(!modifier.isEmpty()&&!modifier.equals("dim")&&!modifier.equals("bcbc"))unknown=true;
+        }
+        Matcher cap=Pattern.compile("(?m)^\\s*mCachedBrightnessInfo.brightnessMaxReason\\s*=\\s*(-?[0-9]+)\\s*$").matcher(main);
+        if(!cap.find())return OutputProbeGuard.Result.UNKNOWN;
+        int limit;
+        try{limit=Integer.parseInt(cap.group(1));}catch(NumberFormatException e){return OutputProbeGuard.Result.UNKNOWN;}
+        if(cap.find())return OutputProbeGuard.Result.UNKNOWN;
+        if(limit>0)return OutputProbeGuard.Result.UNSAFE;
+        return limit==0&&!unknown?OutputProbeGuard.Result.SAFE:OutputProbeGuard.Result.UNKNOWN;
+    }
+    /** Learn only after a slider request has settled back to ordinary automatic output. */
+    public static boolean referenceLearningOutput(String dump) {
+        if(referenceOutputResult(dump)!=OutputProbeGuard.Result.SAFE)return false;
+        String main=mainController(dump);
+        return Pattern.compile("(?m)^\\s*mBrightnessReason=automatic(?:[ \\t]+\\[[ \\t]*bcbc[ \\t]*\\])?[ \\t]*$").matcher(main).find()
+            && Pattern.compile("(?m)^\\s*mTemporaryScreenBrightness[=:]\\s*NaN\\s*$").matcher(main).find();
     }
 
 }

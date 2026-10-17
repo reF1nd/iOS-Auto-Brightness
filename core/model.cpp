@@ -168,20 +168,33 @@ double Controller::base(double lux) const {return reference?referenceBrightness(
 double Controller::target(double lux) const {
     return reference?std::clamp(learning.referenceTarget(lux)*nightScale(),0.0,1.0):learning.target(lux,profile,nightScale());
 }
+void Controller::sliderBaseline(int value) {
+    if(value>=0&&value<=255)last_slider_=value;
+}
 bool Controller::slider(int value,int64_t wallTime) {
     if(value<0||value>255||wallTime<=0)throw std::runtime_error("slider outside reference range");
     const int before=last_slider_;
-    if(before<0){last_slider_=value;return false;}
+    // Compare adjacent stable samples, not the accumulated sum of tiny setting
+    // changes. The bridge is responsible for pacing and validating observations.
+    last_slider_=value;
+    if(before<0)return false;
     if(!reference||!config.enabled||!config.learning_enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||rear_pending_||smooth_<0||output_<0) {
-        last_slider_=value;return false;
+        return false;
     }
     if(std::abs(value-before)<10)return false;
-    last_slider_=value;
     learning.add(smooth_,std::clamp(referenceSlider(value,config.manual_gamma)/nightScale(),0.0,1.0),wallTime,false);
+    reference_curve_target_=-1;
     return true;
+}
+void Controller::pauseOutput() {
+    if(!reference)return;
+    reference_paused_=true;reference_handover_=false;
+    ramp_duration_=0;ramp_target_=-1;
 }
 void Controller::reset() {
     rear_accepted_=-1;rear_candidate_=-1;rear_front_=-1;rear_since_=0;rear_pending_=false;
+    reference_paused_=false;reference_handover_=false;
+    last_reference_filter_=-1;reference_curve_target_=-1;
     last_slider_=-1;frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;solar_decay_=false;dark_pending_=false;dark_since_=-1;
     near_since_=-1;far_since_=-1;proximity_confirmed_=false;front_baseline_=-1;
@@ -194,7 +207,7 @@ bool Controller::learn(double lux,double value,int64_t time) {
     if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||rear_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
-    learning.add(lux,value,time,!reference);if(!reference)hold(frame_.now);return true;
+    learning.add(lux,value,time,!reference);if(reference)reference_curve_target_=-1;else hold(frame_.now);return true;
 }
 Output Controller::step(const Frame& f) {
     const bool waking=f.automatic&&f.screen&&(!frame_.automatic||!frame_.screen);
@@ -205,10 +218,27 @@ Output Controller::step(const Frame& f) {
     if(!config.enabled) return release("disabled");
     if(!f.automatic) {reset();return release("manual_or_unknown");}
     if(!f.screen) {reset();return release("screen_off");}
-    if(f.blocked) {clearStrong();sunlight_=false;high_exit_at_=-1;return release("system_override");}
+    if(f.blocked) {
+        clearStrong();sunlight_=false;high_exit_at_=-1;
+        if(reference) {
+            // A temporary output gate is not a new sensor session. Preserve
+            // accepted ambient values and the last output, and do not count
+            // time spent suspended toward an animation or filter step.
+            pauseOutput();last_=f.now;
+            return {false,output_>=0?output_:0,"system_override"};
+        }
+        return release("system_override");
+    }
 
     if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {clearStrong();sunlight_=false;smooth_=-1;dark_pending_=false;dark_since_=-1;guard_confirmed_=false;ambient_history_.clear();return release("sensor_unavailable");}
     if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) {clearStrong();return release("limits_unavailable");}
+    if(reference&&reference_paused_) {
+        last_=f.now;last_reference_filter_=f.now;rear_since_=f.now;candidate_since_=f.now;
+        if(dark_since_>=0)dark_since_=f.now;
+        if(near_since_>=0)near_since_=f.now;
+        if(far_since_>=0)far_since_=f.now;
+        trend_.clear();fast_until_=0;
+    }
     // Brief proximity pulses must not expose a different system brightness.
     // Freeze an existing output (and learning) while confirming obstruction.
     // State/safety exits above always win, including a newly lowered cap.
@@ -218,6 +248,7 @@ Output Controller::step(const Frame& f) {
         if(near_since_<0||f.now<near_since_)near_since_=f.now;
         if(f.now-near_since_>=600)proximity_confirmed_=true;
         last_=f.now;
+        if(reference)last_reference_filter_=f.now;
         if(output_<0||f.now<hold_until_)return release(proximity_confirmed_?"proximity_hold":"proximity_pending");
         const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
             std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
@@ -233,6 +264,7 @@ Output Controller::step(const Frame& f) {
             const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
                 std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
             output_=std::clamp(output_,f.minimum,cap);desired_=output_;last_=f.now;
+            if(reference)last_reference_filter_=f.now;
             return {true,output_,"proximity_recovery"};
         }
         proximity_confirmed_=false;far_since_=-1;
@@ -257,7 +289,11 @@ Output Controller::step(const Frame& f) {
 
     // A covered rear sensor is normal on a desk. It can extend spike
     // confirmation, but must never cap a stable front-light measurement.
-    double dt=last_?std::clamp((f.now-last_)/1000.0,.01,8.0):.25;last_=f.now;
+    const double filterPeriod=reference?.8:.25;
+    const bool filterDue=!reference||smooth_<0||last_reference_filter_<0||f.now<last_reference_filter_||f.now-last_reference_filter_>=800;
+    double dt=reference?(last_reference_filter_<0?filterPeriod:std::clamp((f.now-last_reference_filter_)/1000.0,0.0,8.0)):
+        (last_?std::clamp((f.now-last_)/1000.0,.01,8.0):filterPeriod);
+    last_=f.now;
     // Keep a bounded recent rear baseline, including the value carried into
     // the window. Rear events can precede a front event when entering darkness.
     while(ambient_history_.size()>1&&ambient_history_[1].now<f.now-5000)ambient_history_.erase(ambient_history_.begin());
@@ -288,8 +324,8 @@ Output Controller::step(const Frame& f) {
             if(f.now-dark_since_>=(rearValid?2000:5000)){dark_pending_=false;dark_since_=-1;guard_confirmed_=true;}
         } else dark_since_=-1;
     }
-    if(dual&&!dark_pending_)front_baseline_=front_baseline_<0?frontLux:
-        front_baseline_+(1-std::pow(1-config.alpha_mid,dt/.25))*(frontLux-front_baseline_);
+    if(filterDue&&dual&&!dark_pending_)front_baseline_=front_baseline_<0?frontLux:
+        front_baseline_+(1-std::pow(1-config.alpha_mid,dt/filterPeriod))*(frontLux-front_baseline_);
     if(dark_pending_)lux=smooth_;
     // Confirm the selected lux coordinate before bypassing slow filters.
     // Two illuminated sides need 250 ms; a single side needs 750 ms so a
@@ -304,42 +340,57 @@ Output Controller::step(const Frame& f) {
     } else clearStrong();
     const bool bothBright=dual&&rearValid&&f.back>=config.high_lux_threshold&&frontLux>=config.high_lux_threshold;
     const bool strongConfirmed=strong&&high_confirm_>=2&&f.now-strong_since_>=(bothBright?250:750);
-    if(strongConfirmed)smooth_=std::max(smooth_,lux);
-    trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
-    if(trend_.size()>=3) {
-        const size_t n=trend_.size();const double first=trend_[n-3],middle=trend_[n-2];
-        if(!rearBright && first>middle && middle>lux && (first-lux)/std::max(first,.01)>.35)
-            fast_until_=f.now+800;
+    if(filterDue&&strongConfirmed)smooth_=std::max(smooth_,lux);
+    // Reference spike parameters bound the next filter input; they are not
+    // confirmation delays. Rear pulse/occlusion confirmation above remains in
+    // force so a transient rear event cannot become a new ambient baseline.
+    if(reference&&smooth_>=1)lux=std::clamp(lux,smooth_*config.spike_down,std::max(5.0,smooth_*config.spike_up));
+    if(filterDue) {
+        trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
+        if(trend_.size()>=3) {
+            const size_t n=trend_.size();const double first=trend_[n-3],middle=trend_[n-2];
+            if(!rearBright && first>middle && middle>lux && (first-lux)/std::max(first,.01)>.35)
+                fast_until_=f.now+800;
+        }
     }
     fast_dark_=!rearBright&&f.now<fast_until_;
-    if(smooth_<0) smooth_=lux;
-    else {
+    if(filterDue&&smooth_<0) smooth_=lux;
+    else if(filterDue) {
         double ratio=(lux+1)/(smooth_+1);
-        if(ratio>config.spike_up||ratio<config.spike_down) {
+        if(!reference&&(ratio>config.spike_up||ratio<config.spike_down)) {
             if(candidate_<0||std::abs(std::log1p(candidate_)-std::log1p(lux))>.4) {candidate_=lux;candidate_since_=f.now;}
             const bool rearDisagrees=ratio>config.spike_up&&std::isfinite(f.back)&&f.back>=0&&f.back<lux/config.spike_up;
             if(!fast_dark_ && f.now-candidate_since_<(rearDisagrees?1500:750)) lux=smooth_;
         } else candidate_=-1;
-        double diff=std::abs(lux-smooth_)/std::max(smooth_,1.0);
+        double diff=std::abs(lux-smooth_)/std::max(smooth_,reference?.1:1.0);
         double blend=std::clamp((diff-config.slow_threshold)/(config.fast_threshold-config.slow_threshold),0.0,1.0);
-        alpha_=diff<=config.slow_threshold?config.alpha_slow:config.alpha_mid+blend*(config.alpha_fast-config.alpha_mid);
+        if(reference) {
+            alpha_=diff>=config.fast_threshold?config.alpha_fast:
+                config.alpha_slow+blend*(config.alpha_mid-config.alpha_slow);
+            if(lux<smooth_&&diff>config.slow_threshold)
+                alpha_=std::max(alpha_,config.alpha_slow+(.7-config.alpha_slow)*std::min(diff/config.fast_threshold,1.0));
+        } else alpha_=diff<=config.slow_threshold?config.alpha_slow:config.alpha_mid+blend*(config.alpha_fast-config.alpha_mid);
         if(trend_.size()==5) {
             double slope=0;for(size_t i=0;i<5;i++)slope+=(static_cast<double>(i)-2)*trend_[i];
             if(std::abs(slope/10)>50)alpha_=std::max(alpha_,.3);
         }
-        if(fast_dark_)alpha_=std::max(alpha_,.7);
-        smooth_+=(1-std::pow(1-alpha_,dt/.25))*(lux-smooth_);
+        if(!reference&&fast_dark_)alpha_=std::max(alpha_,.7);
+        smooth_+=(1-std::pow(1-alpha_,dt/filterPeriod))*(lux-smooth_);
     }
+    if(reference&&filterDue)last_reference_filter_=f.now;
     if(f.now<hold_until_) return release("user_adjustment");
     // Let the display leave AOD and the light sensor settle before seeding
     // the output from current brightness. Never start a ramp from doze level.
     const bool fastWake=f.now<wake_until_&&strongConfirmed;
     if(f.now<wake_until_&&!fastWake) return release("wake_settling");
-    // Explicit learned points take precedence over the time-of-day default.
-    double target=this->target(smooth_);
+    // A fast animation tick consumes the same ambient target. Learning can
+    // invalidate it explicitly, while normal curve updates share the 800ms
+    // environmental clock rather than following every driver poll.
+    if(reference&&(filterDue||reference_curve_target_<0))reference_curve_target_=this->target(smooth_);
+    double target=reference?reference_curve_target_:this->target(smooth_);
     const bool wasSunlight=sunlight_;
     if(!safe) {sunlight_=false;clearStrong();high_exit_at_=-1;}
-    else if(!sunlight_&&strongConfirmed) {sunlight_=true;high_exit_at_=-1;}
+    else if(!sunlight_&&strongConfirmed&&filterDue) {sunlight_=true;high_exit_at_=-1;}
     if(sunlight_) {
         if(smooth_>=config.high_lux_threshold) {
             high_exit_at_=-1;
@@ -365,11 +416,16 @@ Output Controller::step(const Frame& f) {
         ramp_duration_=0;ramp_target_=-1;
         return {true,output_,"sunlight"};
     }
-    if(reference&&output_<0) {
-        // Reference warm start applies the current curve instead of replaying a
-        // stale framework level. Screen-off frames never reach this write path.
-        output_=target;desired_=target;ramp_duration_=0;ramp_target_=target;
-        return {true,output_,"reference_warm_start"};
+    const bool referenceStart=reference&&(output_<0||reference_paused_);
+    const bool referenceResume=referenceStart&&reference_paused_;
+    if(referenceStart) {
+        // f.current is the bridge's live backlight sample. Waking or returning
+        // from an output gate must not jump straight to the curve (nor replay
+        // the last pre-pause output). Even a small handover gets a real ramp.
+        output_=std::clamp(f.current,f.minimum,cap);desired_=target;
+        ramp_from_=output_;ramp_target_=target;ramp_at_=f.now;
+        ramp_duration_=std::max(400,referenceRamp(std::abs(target-output_),target>output_));
+        reference_paused_=false;reference_handover_=true;
     }
     if(output_<0)output_=std::clamp(f.current,f.minimum,cap);
     const bool fastBright=strongConfirmed&&target>output_;
@@ -378,15 +434,19 @@ Output Controller::step(const Frame& f) {
     if(strongConfirmed)solar_decay_=false;
     // low/high refer to brightness level, not the direction of the change.
     double hysteresis=config.hyst_low+(config.hyst_high-config.hyst_low)*std::clamp(output_,0.0,1.0);
-    bool changed=std::abs(target-output_)>std::max(.00001,output_*hysteresis);
+    // Hysteresis decides whether to start a new transition; it must not stop
+    // an already running reference animation just short of its endpoint.
+    bool changed=std::abs(target-output_)>std::max(.00001,output_*hysteresis)||
+        (reference&&ramp_duration_>0&&std::abs(target-output_)>1e-9);
     if(changed) {
         bool reverse=ramp_target_>=0 && (target-output_)*(ramp_target_-output_)<0;
-        if(ramp_duration_==0 || reverse || (fast_dark_&&!solar_decay_&&ramp_duration_>200) || (fastBright&&ramp_duration_>400)) {
+        if(ramp_duration_==0 || reverse || (!reference_handover_&&((fast_dark_&&!solar_decay_&&ramp_duration_>200) || (fastBright&&ramp_duration_>400)))) {
             // Time spent asleep preceded this target; it must not consume the new ramp.
             ramp_from_=output_;ramp_at_=reference?f.now:f.now-static_cast<int64_t>(std::min(dt,.25)*1000);
             double distance=std::abs(target-output_);
             ramp_duration_=solar_decay_&&target<output_?3000:(fastBright?400:(rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))))));
             if(reference)ramp_duration_=sunlight_?1000:(fast_dark_&&target<output_?200:referenceRamp(distance,target>output_));
+            if(reference_handover_)ramp_duration_=std::max<int64_t>(400,ramp_duration_);
         }
         ramp_target_=target;
         double t=ramp_duration_==0?1:std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
@@ -396,10 +456,11 @@ Output Controller::step(const Frame& f) {
         // Moving endpoints must not bypass the downward slew limit. Ignore
         // sleep time before a new target; system/low-battery caps below win.
         if(!reference&&output_<previous)output_=std::max(output_,previous*std::pow(.8,std::min(dt,.25)));
-        if(t>=1&&std::abs(output_-target)<.00001)ramp_duration_=0;
+        if(t>=1&&std::abs(output_-target)<.00001){ramp_duration_=0;reference_handover_=false;}
         desired_=target;
-    } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;solar_decay_=false;}
+    } else {ramp_duration_=0;ramp_target_=output_;desired_=output_;solar_decay_=false;reference_handover_=false;}
     output_=std::clamp(output_,f.minimum,cap);
+    if(referenceStart)return {true,output_,referenceResume?"reference_resume":"reference_start"};
     return {true,output_,lowBattery?"low_battery_limit":(rear_pending_?"rear_sensor_settling":(dark_pending_?"ambient_guard":(sunlight_?"sunlight":(!safe?"auto_boost_unavailable":(nightScale()<1?"night":"auto")))))};
 }
 std::string jsonString(const std::string& s) {

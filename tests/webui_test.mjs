@@ -110,6 +110,13 @@ test('WebUI preserves imported tuning and exposes runtime and log controls',asyn
   assert.ok(elements.get('status').children.length>0);
   await elements.get('startService').onclick();
   assert.match(elements.get('notice').textContent,/无需重复启动/);
+  runtime.output_fault='driver_output_mismatch';
+  await elements.get('refresh').onclick();
+  assert.match(elements.get('notice').textContent,/持续异常停止/);
+  assert.match(elements.get('notice').textContent,/禁用再启用/);
+  assert.match(elements.get('diagnostics').textContent,/driver_output_mismatch/);
+  assert.equal(starts(),3,'displaying a latched fault never retries output');
+  delete runtime.output_fault;
   elements.get('config').value='alpha_fast=0.5\nalpha_fast=0.6';elements.get('config').listeners.input();
   await elements.get('save').onclick();assert.equal(config,'alpha_fast=0.5\n');
 

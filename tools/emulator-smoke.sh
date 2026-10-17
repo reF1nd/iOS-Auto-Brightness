@@ -110,7 +110,7 @@ PY
 done
 [[ "$stable" == 1 ]]
 adb shell settings put system screen_brightness 171
-sleep 5
+sleep 18
 adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-learned.json
 python3 - <<'PYCODE'
 import json
@@ -124,7 +124,7 @@ PYCODE
 # Another slider adjustment updates the observation without opting into the old
 # compatibility mode. Its reconstructed curve must change as well.
 adb shell settings put system screen_brightness 181
-sleep 6
+sleep 12
 adb shell cat /data/local/tmp/iab-state/status.json > build/smoke-compat-learned.json
 python3 - <<'PYCODE'
 import json

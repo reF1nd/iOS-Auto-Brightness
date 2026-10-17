@@ -190,6 +190,12 @@ with tempfile.TemporaryDirectory() as state:
         return subprocess.Popen([exe,state,profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     p=ref_start();ask(p,'POLICY v68');ask(p,'USER 0')
     ask(p,'FRAME 1000 1 1 10 10 0 30 80 0 0.8 0.001 1 0')
+    s=ask(p,'SLIDER_BASELINE 80')
+    assert not s['points'],s
+    s=ask(p,'OUTPUT_PAUSE')
+    assert not s['apply'] and not s['animating'],s
+    s=ask(p,'FRAME 1050 1 1 10 10 0 30 80 0 0.03 0.001 1 0')
+    assert s['apply'] and abs(s['target']-.03)<1e-9 and s['animating'],s
     ask(p,'SLIDER 80 10000');s=ask(p,'SLIDER 110 11000')
     assert s['storage']=='saved_reference_curve' and len(s['points'])==1,s
     first=s['curve'];p.kill();p.wait(timeout=5)

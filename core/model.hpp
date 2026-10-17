@@ -58,7 +58,9 @@ public:
     void hold(int64_t now);
     bool learn(double lux, double value, int64_t timestamp);
     void reset();
+    void pauseOutput();
     bool slider(int value, int64_t wallTime);
+    void sliderBaseline(int value);
     double base(double lux) const;
     double target(double lux) const;
     double smoothLux() const { return smooth_; }
@@ -69,10 +71,14 @@ public:
     double nightScale() const;
     bool ambientGuard() const { return dark_pending_||rear_pending_; }
     bool settled() const { return dark_since_<0 && output_>=0 && std::abs(output_-desired_)<.00001; }
+    bool animating() const { return ramp_duration_>0 && !reference_paused_; }
 private:
     double rear_accepted_=-1,rear_candidate_=-1,rear_front_=-1;
     int64_t rear_since_=0;
     bool rear_pending_=false;
+    bool reference_paused_=false,reference_handover_=false;
+    int64_t last_reference_filter_=-1;
+    double reference_curve_target_=-1;
     int last_slider_=-1;
     Frame frame_;
     double smooth_=-1, output_=-1, candidate_=-1;

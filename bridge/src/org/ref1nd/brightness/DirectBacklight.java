@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
-/** Direct sysfs writer with an optional recoverable write-permission lease. */
+/** Change-driven sysfs writer with a recoverable, non-exclusive permission lease. */
 public final class DirectBacklight {
     public interface Readback {long read() throws IOException;}
     private final Readback readback;
@@ -14,12 +14,13 @@ public final class DirectBacklight {
     private final File node, journal;
     private final BacklightLease lease;
     private RandomAccessFile writer;
-    private boolean reference=false;
+    private boolean reference=false, fault=false, holding=false;
     private float baselineFramework=Float.NaN;
     private final String display, boot;
     public final long maximum;
     public final DriverOutputGuard learning=new DriverOutputGuard();
-    private long last=-1, stableAt=-1, retryAt=0, baseline=-1;
+    private long last=-1, stableAt=-1, baseline=-1, observed=-1, sampledAt=-1;
+    private float sampledFramework=Float.NaN;
     public String status="verifying_mapping";
     public DirectBacklight(File root,String name,File journal,String display,String boot) throws IOException {
         this(root,name,journal,display,boot,null);
@@ -42,10 +43,15 @@ public final class DirectBacklight {
     }
     public void referenceMode(){reference=true;}
     /** Keep the lease through sleep, but never write an off/AOD panel. */
-    public void suspend(){status="reference_screen_off";stableAt=-1;}
+    public void suspend(){if(!fault)status="reference_screen_off";stableAt=-1;observed=-1;holding=false;learning.reset();}
     public String path(){return node.getPath();}
     public boolean owned(){return last>=0;}
+    /** Last value this writer actually submitted; it is not a driver measurement. */
+    public long lastWritten(){return last;}
     public boolean locked(){return lease!=null&&lease.active();}
+    /** Only an explicit service restart/new writer clears a latched fault. */
+    public boolean faulted(){return fault;}
+    public boolean holding(){return holding&&!fault;}
     static File permissionJournal(File journal){return new File(journal.getParentFile(),"backlight-permissions.properties");}
     public static synchronized void unlock(File root,File journal,String boot)throws IOException {
         BacklightLease.restore(root,permissionJournal(journal),boot,BacklightLease.POSIX);
@@ -58,64 +64,96 @@ public final class DirectBacklight {
     }
     /** Seed the controller from the verified live output even before its first write. */
     public float frameBrightness(float framework) {
-        return (owned()||status.equals("direct_ready"))&&baseline>=0
-            ? (owned()?last:baseline)/(float)maximum : framework;
+        return !fault&&observed>=0?observed/(float)maximum:framework;
     }
     private static boolean close(long a,long b){return a>=0&&b>=0&&Math.abs(a-b)<=1;}
+    private static final class Snapshot {
+        final long before,actual,after,maximum;
+        Snapshot(long before,long actual,long after,long maximum){this.before=before;this.actual=actual;this.after=after;this.maximum=maximum;}
+    }
+    private Snapshot snapshot() {
+        long before=requested(),actual=actual(),after=requested();
+        return new Snapshot(before,actual,after,Backlight.number(new File(node,"max_brightness")));
+    }
+    private boolean validate(Snapshot sample,long now,float framework)throws IOException {
+        learning.sample(now,sample.before,sample.actual,sample.after,sample.maximum==maximum?maximum:-1,framework);
+        if(locked()&&!lease.intact()){latch("backlight_permissions_changed");return false;}
+        if(sample.maximum!=maximum||sample.before<0||sample.before>maximum||sample.after<0||sample.after>maximum||sample.actual<0||sample.actual>maximum) {
+            latch("backlight_readback_unavailable");return false;
+        }
+        if(sample.before!=sample.after||!close(sample.actual,sample.after)) {
+            holding=true;status="driver_output_transition";
+            if(learning.protection.equals("driver_output_mismatch"))latch("driver_output_mismatch");
+            return false;
+        }
+        observed=sample.after;holding=false;
+        return true;
+    }
     public boolean ready(long now,float framework) throws IOException {
         synchronized(DirectBacklight.class) {
-        long raw=requested(),actual=actual();
-        long liveMaximum=Backlight.number(new File(node,"max_brightness"));
-        learning.sample(now,raw,actual,liveMaximum==maximum?maximum:-1,framework);
-        if(locked()&&!lease.intact()){abandon(now,"backlight_permissions_changed");return false;}
-        if(liveMaximum!=maximum||raw<0||raw>maximum||actual<0||actual>maximum) {
-            abandon(now,"backlight_readback_unavailable");return false;
-        }
-        if(owned()&&raw!=last&&!reference){abandon(now,"external_backlight_write");return false;}
-        // A lower driver output can be an unreported vendor protection. Do not retry it.
-        if(!close(actual,raw)){abandon(now,"driver_output_mismatch");return false;}
+        if(fault)return false;
+        sampledAt=now;sampledFramework=framework;
+        try {
+        Snapshot sample=snapshot();
+        if(!validate(sample,now,framework))return false;
+        long raw=sample.after;
+        if(owned()&&raw!=last&&!reference){latch("external_backlight_write");return false;}
         if(owned()){status="direct_active";return true;}
         long expected=units(framework,maximum);
         // A proven panel scale does not require the OEM's final compensated output
         // to equal its framework target. Unknown adapters still need a live match.
         if(!verifiedScale&&Math.abs(raw-expected)>1) {
-            stableAt=-1;status="backlight_mapping_mismatch";return false;
+            stableAt=-1;holding=true;status="backlight_mapping_mismatch";return false;
         }
         if(raw!=baseline){baseline=raw;stableAt=now;}
         if(stableAt<0)stableAt=now;
-        if(now<retryAt||now-stableAt<1000){status="verifying_mapping";return false;}
+        if(now-stableAt<1000){holding=true;status="verifying_mapping";return false;}
         baselineFramework=framework;status="direct_ready";return true;
+        }catch(IOException|RuntimeException e){if(!fault)latch("backlight_io_failure");throw e;}
         }
     }
-    private void abandon(long now,String reason) throws IOException {
-        releaseAccess();
-        last=-1;stableAt=-1;baseline=-1;retryAt=now+2000;status=reason;Files.deleteIfExists(journal.toPath());
+    private void latch(String reason) throws IOException {
+        if(fault)return;
+        fault=true;holding=false;status=reason;last=-1;stableAt=-1;baseline=-1;observed=-1;
+        // Never restore brightness after a conflict. Permission recovery remains
+        // durable if releasing the lease fails, for supervisor/startup cleanup.
+        try{releaseAccess();}finally{Files.deleteIfExists(journal.toPath());}
     }
     private void releaseAccess()throws IOException {
         try{if(writer!=null)writer.close();}
-        finally{writer=null;if(lease!=null)lease.release();}
+        finally{writer=null;if(lease!=null&&lease.active())lease.release();}
     }
-    public void write(float target,float cap) throws IOException {
+    /** true means accepted (possibly unchanged); false means no write during a hold/fault. */
+    public boolean write(float target,float cap) throws IOException {
         synchronized(DirectBacklight.class) {
+        if(fault||holding)return false;
         long raw=units(Math.min(target,cap),maximum);
         // Acquire without a brightness step; following frames use the normal ramp.
-        if(verifiedScale&&!reference&&!owned()&&baseline>=0)raw=Math.min(baseline,units(cap,maximum));
+        if((verifiedScale||reference)&&!owned()&&baseline>=0)raw=Math.min(baseline,units(cap,maximum));
         if(raw<1)throw new IOException("refusing to blank an active display");
-        if(Backlight.number(new File(node,"max_brightness"))!=maximum)throw new IOException("backlight range changed");
-        // Recheck after IPC. If the system wrote in the meantime, leave its value alone.
-        long before=requested();
-        if((owned()?(!reference&&before!=last):before!=baseline)||!close(actual(),before))throw new IOException("backlight ownership changed before write");
-        if(owned()&&raw==last&&before==raw)return;
+        // v6.8 compares its cached output, not the live node: unchanged targets
+        // must not chase writes from an already-open system descriptor.
+        if(owned()&&raw==last)return true;
         try {
+        long previousObserved=observed;
+        Snapshot sample=snapshot();
+        if(!validate(sample,sampledAt,sampledFramework))return false;
+        if(sample.after!=previousObserved||(owned()&&!reference&&sample.after!=last)) {
+            holding=true;status="backlight_output_transition";stableAt=-1;
+            return false;
+        }
         if(lease!=null) {
             // app_process can lack DAC override despite uid 0. Retain a handle
             // opened while writable rather than reopening after chmod 0444.
+            // This restricts new opens, but is not exclusive ownership: existing
+            // descriptors held by the display service remain writable too.
             if(writer==null)writer=new RandomAccessFile(new File(node,"brightness"),"rw");
             lease.acquire();
         }
         Properties p=new Properties();p.setProperty("node",node.getName());p.setProperty("display",display);
         p.setProperty("boot",boot);p.setProperty("maximum",Long.toString(maximum));p.setProperty("last",Long.toString(raw));
         p.setProperty("readback",readback==null?"sysfs":"mi");p.setProperty("systemRaw",Long.toString(baseline));p.setProperty("framework",Float.toString(baselineFramework));
+        if(reference)p.setProperty("policy","reference_no_restore");
         File tmp=File.createTempFile(".direct-",".tmp",journal.getParentFile());
         try {
             try(FileOutputStream out=new FileOutputStream(tmp)){p.store(out,"IAB direct output recovery");out.getFD().sync();}
@@ -123,8 +161,8 @@ public final class DirectBacklight {
         }finally{tmp.delete();}
         if(writer!=null){writer.seek(0);writer.write((raw+"\n").getBytes(StandardCharsets.US_ASCII));}
         else writeNode(new File(node,"brightness"),raw);
-        last=raw;status="direct_active";
-        }catch(IOException|RuntimeException e){last=-1;releaseAccess();throw e;}
+        last=raw;status="direct_active";return true;
+        }catch(IOException|RuntimeException e){if(!fault)latch("backlight_io_failure");throw e;}
         }
     }
     static void writeNode(File path,long value) throws IOException {
@@ -139,6 +177,9 @@ public final class DirectBacklight {
         if(!journal.isFile())return;
         Properties p=new Properties();try(InputStream in=new FileInputStream(journal)){p.load(in);}
         try {
+            // Reference mode never substitutes a stale framework target on exit.
+            // Older journals without this policy keep their original recovery.
+            if("reference_no_restore".equals(p.getProperty("policy")))return;
             if(!display.equals(p.getProperty("display"))||!boot.equals(p.getProperty("boot"))||!on)return;
             String name=p.getProperty("node","");if(!name.matches("[A-Za-z0-9_-]+"))return;
             File node=new File(root,name);long max=Long.parseLong(p.getProperty("maximum")),last=Long.parseLong(p.getProperty("last"));
@@ -157,7 +198,10 @@ public final class DirectBacklight {
         }catch(IllegalArgumentException e){throw new IOException("invalid backlight recovery data",e);}
         finally{Files.deleteIfExists(journal.toPath());}
     }
-    public void released()throws IOException {releaseAccess();last=-1;stableAt=-1;baseline=-1;status="released";}
+    public void released()throws IOException {
+        releaseAccess();last=-1;stableAt=-1;baseline=-1;observed=-1;holding=false;
+        if(!fault)status="released";
+    }
     /** Framework -> HAL identity must be proven, never assume two normalized ranges match. */
     public static boolean identityMapping(String dump,String display) {
         try {

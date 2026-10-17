@@ -63,6 +63,9 @@ exec 7>&- 9>&-
 # shellcheck source=module/process-group.sh
 . "$MODDIR/process-group.sh"
 iab_detach_cgroups || fail '无法脱离管理器的进程回收组，服务未启动；请查看启动日志'
+# Explicit recovery only, after all guards and old-process checks. Boot, crash
+# supervision and hot update must never clear a latched output failure.
+rm -f "$STATE/output-fault" || fail '无法清除调光故障，请检查运行目录'
 nohup setsid "$IAB_START_BB" sh "$MODDIR/service.sh" 8>&- 7>&- 9>&- \
   </dev/null >>"$STATE/supervisor.log" 2>&1 &
 # Success requires the installed source identity and two advancing heartbeats.
