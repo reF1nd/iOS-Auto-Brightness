@@ -26,6 +26,109 @@ void checkRise(double before,double after,int64_t elapsed) {
 double weightedLux(double front,double rear) {
     return std::expm1(std::log1p(front)+std::min(.25*std::max(0.0,std::log1p(rear)-std::log1p(front)),std::log(3.0)));
 }
+void checkObservedOutput() {
+    Controller observed;observed.reference=true;
+    auto f=referenceFrame(weightedLux(6.05,15),0);
+    f.front=6.05;f.back=15;f.local_hour=0;
+    f.current=referenceBrightness(referenceNits(f.lux))*.95;
+    const double preset=observed.step(f).value;
+    check(std::abs(preset*16383-972)<1,"ordinary OEM observation starts with the recorded preset near raw972");
+    double live=591.0/16383;
+    for(int i=0;i<24;i++) {
+        f.now+=800;live=(585+i%7)/16383.0;f.current=live;
+        observed.observeOutput(f.now,live);
+        const auto out=observed.step(f);
+        check(!out.apply&&out.value==live&&out.reason=="external_output","repeated OEM writes never chase an unchanged module target");
+        check(observed.settled()&&!observed.animating()&&observed.learning.points.empty(),"ordinary output observations settle without teaching or restarting animation");
+        check(std::abs(observed.smoothLux()-f.lux)<1e-12,"ordinary output changes preserve stable front and rear ambient readings");
+    }
+
+    for(bool interrupted:{false,true}) {
+        Controller changed=observed;auto changeFrame=f;bool resumed=false;
+        for(int i=1;i<=80;i++) {
+            changeFrame.now+=800;changeFrame.front=6.05+i*.05;
+            changeFrame.lux=weightedLux(changeFrame.front,changeFrame.back);
+            changed.observeOutput(changeFrame.now,live);
+            const auto out=changed.step(changeFrame);
+            if(i==1)check(!out.apply&&out.reason=="external_output","a sub-hysteresis target change cannot restart control");
+            if(out.reason!="external_output") {
+                check(out.apply&&out.value==live&&changed.animating(),"accumulated real target changes restart a gradual ramp at the latest actual output");
+                resumed=true;break;
+            }
+            check(!out.apply&&out.value==live,"repeated OEM observations retain the first target comparison baseline");
+            if(interrupted) {
+                // An incoherent read after each small target update must not
+                // replace the first observed target with the latest target.
+                changeFrame.now+=50;changed.pauseOutput();
+                changed.observeOutput(changeFrame.now,live);
+                const auto ordinaryResume=changed.step(changeFrame);
+                check(!ordinaryResume.apply&&ordinaryResume.reason=="external_output","transient pause preserves the original observed target baseline");
+            }
+        }
+        check(resumed,"small environmental changes cross hysteresis despite repeated OEM writes and transient pauses");
+        changeFrame.now+=50;const auto progressing=changed.step(changeFrame);
+        check(progressing.value>live,"changed environmental target resumes actual output progress");
+        checkRise(live,progressing.value,50);
+    }
+
+    Controller bounds=observed;auto boundFrame=f;
+    boundFrame.now+=50;bounds.observeOutput(boundFrame.now,.5);boundFrame.maximum=.4;
+    auto bounded=bounds.step(boundFrame);
+    check(bounded.apply&&bounded.value==.4,"an unchanged curve still clips an observed output above the current cap immediately");
+    boundFrame.now+=50;bounded=bounds.step(boundFrame);
+    check(!bounded.apply&&bounded.value==.4,"the clipped external output is not rewritten on every frame");
+    boundFrame.maximum=.02;boundFrame.now+=50;bounded=bounds.step(boundFrame);
+    check(bounded.apply&&bounded.value<=.02,"a new binding cap overrides an observed output without waiting for a ramp");
+    Controller minimum=observed;auto minFrame=f;minFrame.minimum=.04;minFrame.now+=50;
+    const auto raisedMinimum=minimum.step(minFrame);
+    check(raisedMinimum.apply&&raisedMinimum.value==.04,"mandatory minimum still clips an observed output while its curve target is unchanged");
+
+    Controller proximity=observed;auto nearFrame=f;nearFrame.now+=50;nearFrame.near=true;
+    check(!proximity.step(nearFrame).apply,"a proximity pulse does not rewrite an ordinary observed output");
+    nearFrame.now+=600;check(!proximity.step(nearFrame).apply,"confirmed proximity retains the no-write observation");
+    nearFrame.now+=50;nearFrame.near=false;
+    check(!proximity.step(nearFrame).apply,"proximity recovery does not spuriously restart output control");
+    nearFrame.now+=300;check(!proximity.step(nearFrame).apply,"unchanged curve remains observed after proximity recovery");
+
+    Controller synced=observed;auto syncFrame=f;syncFrame.now+=50;syncFrame.current=499.0/16383;
+    synced.syncOutput(syncFrame.now,syncFrame.current);
+    const auto syncStart=synced.step(syncFrame);
+    check(syncStart.apply&&syncStart.value==syncFrame.current&&synced.animating(),"explicit synchronization clears ordinary observation and resumes unchanged target control");
+    syncFrame.now+=50;check(synced.step(syncFrame).value>syncFrame.current,"explicit synchronization can progress toward the module curve");
+
+    Controller paused=observed;auto pauseFrame=f;pauseFrame.now+=50;pauseFrame.blocked=true;
+    check(!paused.step(pauseFrame).apply,"DIM pause never writes an observed output");
+    pauseFrame.now+=5000;pauseFrame.blocked=false;pauseFrame.current=.02;
+    const auto resumedOutput=paused.step(pauseFrame);
+    check(resumedOutput.apply&&resumedOutput.value==pauseFrame.current&&resumedOutput.reason=="reference_resume"&&paused.animating(),"DIM resume clears observation and starts from the latest live brightness");
+
+    Controller transient=observed;auto transientFrame=f;transientFrame.now+=50;transientFrame.blocked=true;
+    check(!transient.step(transientFrame).apply,"transient incoherent output pauses writes");
+    transientFrame.now+=5000;transientFrame.blocked=false;transientFrame.current=.03;
+    transient.observeOutput(transientFrame.now,transientFrame.current);
+    const auto ordinaryResume=transient.step(transientFrame);
+    check(!ordinaryResume.apply&&ordinaryResume.value==transientFrame.current&&ordinaryResume.reason=="external_output"&&transient.settled(),"ordinary safe observation after a transient pause does not chase the unchanged curve");
+    check(transient.smoothLux()==observed.smoothLux()&&!transient.animating(),"ordinary observation ends the pause without spending suspended filter time");
+    transientFrame.now+=800;
+    check(!transient.step(transientFrame).apply,"resolved ordinary observation stays latched on later frames");
+    transient.observeOutput(transientFrame.now,.025);transientFrame.blocked=true;
+    check(!transient.step(transientFrame).apply,"a protected frame still blocks a preceding ordinary observation");
+    transientFrame.blocked=false;transientFrame.now+=50;transientFrame.current=.02;
+    check(transient.step(transientFrame).reason=="reference_resume","a real protected pause still uses live resume when no new ordinary observation arrives");
+
+    Controller learned=observed;auto learnFrame=f;
+    check(learned.learn(learnFrame.lux,.002,10000),"eligible explicit preference is accepted while observing OEM output");
+    learnFrame.now+=50;const auto learnedStart=learned.step(learnFrame);
+    check(learnedStart.apply&&learnedStart.value==live&&learned.animating(),"a new preference clears the observation latch and begins a smooth transition");
+    Controller slider=observed;slider.sliderBaseline(25);
+    check(slider.slider(100,11000),"eligible slider preference is accepted while observing OEM output");
+    auto sliderFrame=f;sliderFrame.now+=50;
+    check(slider.step(sliderFrame).apply&&slider.animating(),"slider learning does not leave ordinary output observation latched");
+
+    Controller reset=observed;reset.reset();auto resetFrame=f;resetFrame.now+=50;resetFrame.current=.02;
+    const auto resetStart=reset.step(resetFrame);
+    check(resetStart.apply&&resetStart.value==resetFrame.current&&reset.animating(),"source or session reset clears ordinary output observation");
+}
 int main(){
     check(std::abs(referenceBrightness(referenceNits(10))-.068271013)<.000001,"reference 10 lux curve");
     check(std::abs(referenceBrightness(referenceNits(100))-.2071)<.0001,"reference 100 lux curve");
@@ -181,6 +284,7 @@ int main(){
     syncedController.pauseOutput();syncFrame.now+=50;syncFrame.current=.02;
     syncedController.syncOutput(syncFrame.now,syncFrame.current);synced=syncedController.step(syncFrame);
     check(synced.reason=="reference_resume"&&synced.value==syncFrame.current,"synchronization preserves an existing paused-resume handover");
+    checkObservedOutput();
     Controller failedWrite;failedWrite.reference=true;
     auto raceFrame=referenceFrame(10,.8);
     failedWrite.step(raceFrame);raceFrame.now+=50;const auto unwritten=failedWrite.step(raceFrame);

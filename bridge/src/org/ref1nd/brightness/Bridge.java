@@ -315,8 +315,12 @@ public final class Bridge implements SensorEventListener {
     }
     void syncDirectOutput(long now,float framework) throws Exception {
         if(!referenceControl||observe||direct==null||!direct.externalChanged())return;
+        // Unknown intent keeps the revision pending. Only positive ordinary
+        // output evidence may suppress a repeat write of the same curve goal.
+        if(outputEvidenceResult!=OutputProbeGuard.Result.SAFE)return;
         long revision=direct.externalRevision();
-        result=request(String.format(Locale.ROOT,"OUTPUT_SYNC %d %.9f",now,direct.frameBrightness(framework)));
+        String command=outputLearningSafe&&!referenceOutputHold.holdFrames()?"OUTPUT_OBSERVE":"OUTPUT_SYNC";
+        result=request(String.format(Locale.ROOT,"%s %d %.9f",command,now,direct.frameBrightness(framework)));
         if(!direct.acknowledgeExternal(revision))throw new IOException("backlight sample changed during output sync");
     }
     void finishReferenceSample(long now,float current,boolean directReady) throws Exception {
@@ -876,7 +880,17 @@ public final class Bridge implements SensorEventListener {
                         if(Math.abs(DirectBacklight.units(target,direct.maximum)-acceptedRaw)>1)
                             result=request(String.format(Locale.ROOT,"OUTPUT_SYNC %d %.9f",writeNow,lastWrite));
                     }
-                    else {if(!changed)result=request("OUTPUT_PAUSE");result.put("reason",direct.status);}
+                    else {
+                        if(!changed&&direct.externalChanged()) {
+                            // The final writer snapshot can discover a newer
+                            // coherent value after ready(). Treat it as an
+                            // observation too, rather than restarting the goal.
+                            refreshReferenceInteraction();
+                            syncDirectOutput(SystemClock.elapsedRealtime(),adjusted(latest));
+                            if(outputEvidenceResult==OutputProbeGuard.Result.UNSAFE)clearOverride();
+                        } else if(!changed)result=request("OUTPUT_PAUSE");
+                        result.put("reason",direct.status).put("apply",false);
+                    }
                     overridden=direct.owned();outputStatus=direct.status;
                 }else {
                     result=request("OUTPUT_PAUSE");

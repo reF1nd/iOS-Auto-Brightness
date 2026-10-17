@@ -6,6 +6,22 @@ import org.ref1nd.brightness.ReferenceSliderSampling;
 public final class ReferenceOutputHoldTest {
     static void check(boolean value,String message){if(!value)throw new AssertionError(message);}
     static final String MAIN="Display Power Controller:\n  mDisplayId=0\n  mBrightnessReason=automatic [ dim ]\n  mTemporaryScreenBrightness:NaN\n  mCachedBrightnessInfo.brightnessMaxReason =0\n";
+    // Reduced real dump structure: nested strategy IDs belong to the same
+    // display, including the vendor's '=:' spelling. No device identifiers.
+    static final String NESTED_MAIN="Display Power Controller:\n-------------------------\n"
+        +"  mDisplayId=0\n  mLeadDisplayId=-1\n\n"
+        +"Display Power Controller Locked State:\n  mPendingRequestLocked=policy=DIM\n\n"
+        +"Display Power Controller Configuration:\n  mCachedBrightnessInfo.brightnessMaxReason =0\n\n"
+        +"Display Power Controller Thread State:\n  mPowerRequest=policy=DIM\n  mBrightnessReason=automatic [ dim ]\n"
+        +"AutomaticBrightnessStrategy:\n  mDisplayId=0\n\n"
+        +"DisplayBrightnessController:\n  mDisplayId=: 0\n\n"
+        +"DisplayBrightnessStrategySelector:\n----------------------------------\n  mDisplayId= 0\n"
+        +"FollowerBrightnessStrategy:\n  mDisplayId=0\n"
+        +"TemporaryBrightnessStrategy:\n  mTemporaryScreenBrightness:NaN\n"
+        +"AutomaticBrightnessStrategy:\n  mDisplayId=0\n\n"
+        +"WakelockController State:\n-------------------------\n  mDisplayId=0\n\n"
+        +"BrightnessRangeController:\n  mDisplayId=0\n\n"
+        +"DisplayPowerControllerImpl:\n  mDisplayId=0\n";
     public static void main(String[] args) {
         check(ProtectionPolicy.referenceDimOutput(MAIN),"main automatic DIM recognized");
         check(ProtectionPolicy.referenceDimOutput(MAIN.replace("[ dim ]","[ bcbc dim ]")),"known compensation may accompany DIM");
@@ -20,6 +36,35 @@ public final class ReferenceOutputHoldTest {
         String rear=MAIN.replace("mDisplayId=0","mDisplayId=1");
         check(ProtectionPolicy.referenceDimOutput(rear+MAIN),"only the main controller authorizes its DIM state");
         check(!ProtectionPolicy.referenceDimOutput(rear+MAIN.replace("[ dim ]","[ bcbc ]")),"rear DIM must not pause the main panel");
+        check(ProtectionPolicy.referenceDimOutput(NESTED_MAIN),"real nested controller IDs do not hide main DIM");
+        check(ProtectionPolicy.referenceDimOutput(NESTED_MAIN.replace("[ dim ]","[ bcbc dim ]")),"nested controller DIM permits known vendor compensation");
+        String nestedBright=NESTED_MAIN.replace("policy=DIM","policy=BRIGHT").replace("[ dim ]","[ bcbc ]");
+        check(!ProtectionPolicy.referenceDimOutput(nestedBright)&&ProtectionPolicy.referenceLearningOutput(nestedBright),"ordinary nested BRIGHT output ends DIM and permits settled learning");
+        check(!ProtectionPolicy.referenceLearningOutput(NESTED_MAIN),"nested DIM must never become a learning baseline");
+        String nestedRear=NESTED_MAIN.replaceFirst("mDisplayId=0","mDisplayId=1");
+        check(!ProtectionPolicy.referenceDimOutput(nestedRear)&&!ProtectionPolicy.referenceOutput(nestedRear),"child display zero cannot authorize a root secondary display");
+        check(ProtectionPolicy.referenceDimOutput(nestedRear+NESTED_MAIN),"root IDs select the main controller even when secondary children mention zero");
+        check(!ProtectionPolicy.referenceDimOutput(NESTED_MAIN+nestedBright),"two root main controllers remain ambiguous");
+        for(String dump:new String[]{
+            NESTED_MAIN.replaceFirst("mDisplayId=0","mDisplayId=0\n  mDisplayId=0"),
+            NESTED_MAIN.replaceFirst("mDisplayId=0","mDisplayId=0\n  mDisplayId=1"),
+            NESTED_MAIN.replaceFirst("mDisplayId=0","mDisplayId=: 0"),
+            NESTED_MAIN.replaceFirst("  mDisplayId=0\n",""),
+            NESTED_MAIN.replace("[ dim ]","[ dim vendor_unknown ]"),
+            NESTED_MAIN.replace("[ dim ]","[ dim thermal ]"),
+            NESTED_MAIN.replace("=automatic [ dim ]","=unknown [ dim ]"),
+            NESTED_MAIN.replace("brightnessMaxReason =0","brightnessMaxReason =unknown"),
+            NESTED_MAIN.replace("brightnessMaxReason =0","brightnessMaxReason =1"),
+            NESTED_MAIN+"  mBrightnessReason=automatic [ dim ]\n",
+            NESTED_MAIN+"  mCachedBrightnessInfo.brightnessMaxReason =0\n"}) {
+            check(!ProtectionPolicy.referenceDimOutput(dump),"nested dumps still reject ambiguous root identity, reason and cap evidence");
+            check(!ProtectionPolicy.referenceOutput(dump),"nested parsing must not broaden write permission for ambiguous or protected output");
+        }
+        var parsedHold=new ReferenceOutputHold();
+        parsedHold.observe(0,false,ProtectionPolicy.referenceDimOutput(NESTED_MAIN),ProtectionPolicy.referenceLearningOutput(NESTED_MAIN));
+        check(ProtectionPolicy.referenceOutput(NESTED_MAIN)&&parsedHold.holdWrites()&&!parsedHold.awaitingSample(),"recognized DIM retains reference ownership but pauses writes without inventing a slider event");
+        parsedHold.observe(1,false,ProtectionPolicy.referenceDimOutput(nestedBright),ProtectionPolicy.referenceLearningOutput(nestedBright));
+        check(!parsedHold.holdWrites(),"parsed ordinary BRIGHT resumes after parsed DIM");
 
         var hold=new ReferenceOutputHold();
         check(!hold.holdFrames()&&!hold.holdWrites(),"initial output is not paused");

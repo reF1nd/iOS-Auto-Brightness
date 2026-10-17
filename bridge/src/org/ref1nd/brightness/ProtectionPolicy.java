@@ -48,8 +48,20 @@ public final class ProtectionPolicy {
         if(dump==null)return null;
         String[] sections=dump.split("(?m)^Display Power Controller:\\s*$");
         String main=null;
-        for(int i=1;i<sections.length;i++)if(Pattern.compile("(?m)^\\s*mDisplayId=0\\s*$").matcher(sections[i]).find()) {
-            if(main!=null)return null;main=sections[i];
+        for(int i=1;i<sections.length;i++) {
+            String section=sections[i];
+            // The controller header owns the display identity. Its child
+            // strategies/controllers repeat mDisplayId with vendor formatting;
+            // those fields are not additional root controllers or identities.
+            Matcher child=Pattern.compile("(?m)^[^ \\t\\r\\n-][^\\r\\n]*$").matcher(section);
+            String metadata=child.find()?section.substring(0,child.start()):section;
+            Matcher ids=Pattern.compile("(?m)^[ \\t]*mDisplayId[^\\r\\n]*$").matcher(metadata);
+            if(!ids.find())return null;
+            Matcher id=Pattern.compile("[ \\t]*mDisplayId[ \\t]*=[ \\t]*([0-9]+)[ \\t]*").matcher(ids.group());
+            if(!id.matches()||ids.find())return null;
+            if(id.group(1).equals("0")) {
+                if(main!=null)return null;main=section;
+            }
         }
         return main;
     }
@@ -88,8 +100,6 @@ public final class ProtectionPolicy {
     public static boolean referenceDimOutput(String dump) {
         if(referenceOutputResult(dump)!=OutputProbeGuard.Result.SAFE)return false;
         String main=mainController(dump);if(main==null)return false;
-        Matcher id=Pattern.compile("(?m)^[ \\t]*mDisplayId[ \\t]*[=:][^\\r\\n]*$").matcher(main);
-        if(!id.find()||!id.group().matches("[ \\t]*mDisplayId[ \\t]*=[ \\t]*0[ \\t]*")||id.find())return false;
         Matcher reason=Pattern.compile("(?m)^[ \\t]*mBrightnessReason[ \\t]*[=:][^\\r\\n]*$").matcher(main);
         if(!reason.find())return false;
         String line=reason.group();if(reason.find())return false;

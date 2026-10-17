@@ -78,6 +78,11 @@ int main(int argc,char**argv) {
                     if(!(in>>now>>value)||!hasUser)throw std::runtime_error("invalid output sync");
                     end();
                     core.syncOutput(now,value);last={false,value,"output_sync"};
+                } else if(cmd=="OUTPUT_OBSERVE") {
+                    int64_t now;double value;
+                    if(!(in>>now>>value)||!hasUser)throw std::runtime_error("invalid output observation");
+                    end();
+                    core.observeOutput(now,value);last={false,value,"output_observed"};
                 } else if(cmd=="SLIDER_BASELINE") {
                     int value;if(!(in>>value)||value<0||value>255||!hasUser)throw std::runtime_error("invalid slider baseline");end();
                     core.sliderBaseline(value);

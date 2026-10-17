@@ -183,29 +183,58 @@ bool Controller::slider(int value,int64_t wallTime) {
     }
     if(std::abs(value-before)<10)return false;
     learning.add(smooth_,std::clamp(referenceSlider(value,config.manual_gamma)/nightScale(),0.0,1.0),wallTime,false);
-    reference_curve_target_=-1;
+    if(reference_observed_target_>=0)reference_handover_=true;
+    reference_curve_target_=-1;reference_observed_target_=-1;
     return true;
 }
 void Controller::pauseOutput() {
     if(!reference)return;
     reference_paused_=true;reference_handover_=false;
+    // A coherent ordinary observation may resolve this pause. Keep its first
+    // target baseline until a real resume or explicit synchronization occurs.
     last_reference_output_=-1;reference_ramp_elapsed_=0;
     ramp_duration_=0;ramp_target_=-1;
 }
 void Controller::syncOutput(int64_t now,double liveValue) {
     if(!reference||now<0||!std::isfinite(liveValue)||liveValue<0||liveValue>1)
         throw std::runtime_error("invalid reference output sync");
-    // An external coherent write is an output observation, never a new ambient
-    // sample or a preference. Keep the curve and any existing pause unchanged.
+    // Explicit writer feedback or completion of a manual adjustment rebases
+    // active control. It is never a new ambient sample or a preference.
     output_=liveValue;ramp_from_=liveValue;ramp_target_=-1;ramp_at_=now;
     ramp_duration_=0;reference_ramp_elapsed_=0;last_reference_output_=now;
+    reference_observed_target_=-1;
     // The next FRAME starts at this output even for a small downward correction.
     reference_handover_=true;
+}
+void Controller::resumeReferenceTime(int64_t now) {
+    last_=now;last_reference_filter_=now;rear_since_=now;candidate_since_=now;
+    if(dark_since_>=0)dark_since_=now;
+    if(near_since_>=0)near_since_=now;
+    if(far_since_>=0)far_since_=now;
+    trend_.clear();fast_until_=0;
+}
+void Controller::observeOutput(int64_t now,double liveValue) {
+    if(!reference||now<0||!std::isfinite(liveValue)||liveValue<0||liveValue>1)
+        throw std::runtime_error("invalid reference output observation");
+    // Ordinary OEM adjustments must not provoke a chase back to an unchanged
+    // module target. Retain the first target baseline so small environmental
+    // changes can accumulate across repeated OEM writes and eventually act.
+    // The bridge sends OBSERVE only after ordinary output is coherent and safe.
+    // This also resolves a preceding transient read pause without turning it
+    // into a request to chase the same target. A still-blocked FRAME wins below.
+    if(reference_paused_)resumeReferenceTime(now);
+    reference_paused_=false;
+    if(reference_observed_target_<0)
+        reference_observed_target_=reference_control_target_;
+    output_=liveValue;desired_=liveValue;ramp_from_=liveValue;ramp_target_=-1;ramp_at_=now;
+    ramp_duration_=0;reference_ramp_elapsed_=0;last_reference_output_=now;
+    reference_handover_=false;
 }
 void Controller::reset() {
     rear_accepted_=-1;rear_candidate_=-1;rear_front_=-1;rear_since_=0;rear_pending_=false;
     reference_paused_=false;reference_handover_=false;
     last_reference_filter_=-1;reference_curve_target_=-1;
+    reference_control_target_=-1;reference_observed_target_=-1;
     last_reference_output_=-1;reference_ramp_elapsed_=0;
     last_slider_=-1;frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;solar_decay_=false;dark_pending_=false;dark_since_=-1;
@@ -214,19 +243,21 @@ void Controller::reset() {
     high_confirm_=0;high_exit_at_=-1;last_high_confirm_=-1;strong_since_=-1;alpha_=0;desired_=0;
     sunlight_target_=0;ramp_from_=0;ramp_target_=-1;ramp_at_=0;ramp_duration_=0;fast_until_=0;
 }
-void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;}
+void Controller::hold(int64_t now) {hold_until_=now+config.user_hold_ms;output_=-1;ramp_target_=-1;ramp_duration_=0;reference_observed_target_=-1;}
 bool Controller::learn(double lux,double value,int64_t time) {
     if(!config.learning_enabled||!config.enabled||!frame_.automatic||!frame_.screen||frame_.blocked||frame_.near||proximity_confirmed_||dark_pending_||rear_pending_||smooth_<0||frame_.lux<0) return false;
     if(!std::isfinite(lux)||lux<0||std::abs(std::log1p(lux)-std::log1p(smooth_))>std::log(3.0)) return false;
     if(value<frame_.minimum||value>frame_.maximum) return false;
-    learning.add(lux,value,time,!reference);if(reference)reference_curve_target_=-1;else hold(frame_.now);return true;
+    learning.add(lux,value,time,!reference);
+    if(reference){if(reference_observed_target_>=0)reference_handover_=true;reference_curve_target_=-1;reference_observed_target_=-1;}else hold(frame_.now);
+    return true;
 }
 Output Controller::step(const Frame& f) {
     const bool waking=f.automatic&&f.screen&&(!frame_.automatic||!frame_.screen);
     if(waking){reset();wake_until_=f.now+(reference?0:2000);}
     frame_=f;
     auto clearStrong=[&](){high_confirm_=0;last_high_confirm_=-1;strong_since_=-1;};
-    auto release=[&](const char* reason){output_=-1;ramp_duration_=0;ramp_target_=-1;return Output{false,0,reason};};
+    auto release=[&](const char* reason){output_=-1;ramp_duration_=0;ramp_target_=-1;reference_control_target_=-1;reference_observed_target_=-1;return Output{false,0,reason};};
     if(!config.enabled) return release("disabled");
     if(!f.automatic) {reset();return release("manual_or_unknown");}
     if(!f.screen) {reset();return release("screen_off");}
@@ -245,11 +276,8 @@ Output Controller::step(const Frame& f) {
     if(!std::isfinite(f.lux)||f.lux<0||f.lux>200000) {clearStrong();sunlight_=false;smooth_=-1;dark_pending_=false;dark_since_=-1;guard_confirmed_=false;ambient_history_.clear();return release("sensor_unavailable");}
     if(!std::isfinite(f.minimum)||!std::isfinite(f.maximum)||f.minimum<0||f.maximum>1||f.minimum>f.maximum||!std::isfinite(f.current)) {clearStrong();return release("limits_unavailable");}
     if(reference&&reference_paused_) {
-        last_=f.now;last_reference_filter_=f.now;rear_since_=f.now;candidate_since_=f.now;
-        if(dark_since_>=0)dark_since_=f.now;
-        if(near_since_>=0)near_since_=f.now;
-        if(far_since_>=0)far_since_=f.now;
-        trend_.clear();fast_until_=0;
+        resumeReferenceTime(f.now);
+        reference_observed_target_=-1;
     }
     // Animation has its own clock: a slow binder/readback frame must not spend
     // the entire pause catching up to an old endpoint. Zero is a valid timestamp.
@@ -269,9 +297,10 @@ Output Controller::step(const Frame& f) {
         if(output_<0||f.now<hold_until_)return release(proximity_confirmed_?"proximity_hold":"proximity_pending");
         const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
             std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
+        const double live=output_;
         output_=std::clamp(output_,f.minimum,cap);desired_=output_;
         ramp_duration_=0;ramp_target_=-1;
-        return {true,output_,proximity_confirmed_?"proximity_hold":"proximity_pending"};
+        return {reference_observed_target_<0||output_!=live,output_,proximity_confirmed_?"proximity_hold":"proximity_pending"};
     }
     near_since_=-1;
     if(proximity_confirmed_) {
@@ -280,9 +309,10 @@ Output Controller::step(const Frame& f) {
             if(output_<0||f.now<hold_until_)return release("proximity_recovery");
             const double cap=config.low_battery_enabled&&f.battery>=0&&f.battery<15&&!f.charging?
                 std::max(f.minimum,std::min(f.maximum,.7)):f.maximum;
+            const double live=output_;
             output_=std::clamp(output_,f.minimum,cap);desired_=output_;last_=f.now;
             if(reference)last_reference_filter_=f.now;
-            return {true,output_,"proximity_recovery"};
+            return {reference_observed_target_<0||output_!=live,output_,"proximity_recovery"};
         }
         proximity_confirmed_=false;far_since_=-1;
     }
@@ -425,6 +455,22 @@ Output Controller::step(const Frame& f) {
     // A manual adjustment still takes effect, but cannot teach a shaded sample.
     if(dark_pending_)target=output_>=0?output_:f.current;
     target=std::clamp(target,f.minimum,cap);
+    if(reference) {
+        reference_control_target_=target;
+        if(reference_observed_target_>=0) {
+            const double hysteresis=config.hyst_low+(config.hyst_high-config.hyst_low)*reference_observed_target_;
+            if(std::abs(target-reference_observed_target_)<=std::max(.00001,reference_observed_target_*hysteresis)) {
+                // Preserve actual output while the module's own target is
+                // unchanged. Safety bounds still clip immediately.
+                const double live=output_;
+                output_=std::clamp(output_,f.minimum,cap);desired_=output_;
+                ramp_duration_=0;ramp_target_=-1;
+                return {output_!=live,output_,"external_output"};
+            }
+            reference_observed_target_=-1;
+            reference_handover_=true;
+        }
+    }
     if(fastWake) {
         // Do not dim a bright OEM wake frame or ramp from an AOD-level frame.
         output_=std::clamp(std::max(f.current,target),f.minimum,cap);desired_=output_;

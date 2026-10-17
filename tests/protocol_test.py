@@ -226,7 +226,7 @@ with tempfile.TemporaryDirectory() as state:
     p.kill();p.wait(timeout=5)
 print('Weighted selection does not consume or delete dual-max observations')
 
-# Coherent external output rebases the active ramp without teaching or releasing
+# Explicit writer feedback rebases the active ramp without teaching or releasing
 # the controller. The live raw499 must not jump to its pending raw1304 target.
 with tempfile.TemporaryDirectory() as state:
     p=start();ask(p,'POLICY v68');ask(p,'USER 0')
@@ -246,3 +246,44 @@ with tempfile.TemporaryDirectory() as state:
     assert abs(s['target']-old['desired'])<1e-9,s
     p.stdin.close();assert p.wait(timeout=5)==0
 print('External output synchronization preserves the curve and resumes gradual control')
+
+# Ordinary OEM output changes are observations, not requests to chase the same
+# module target. This is intentionally different from explicit OUTPUT_SYNC.
+with tempfile.TemporaryDirectory() as state:
+    p=start();ask(p,'POLICY v68');ask(p,'USER 0')
+    old=ask(p,'FRAME3 1000 1 1 7.6531024 15 0 30 80 0 0.059356424 0.000366256 1 0 0 6.05')
+    now=1000
+    for raw in [591,585,588,591,585,588]:
+        now+=800;live=raw/16383
+        observed=ask(p,f'OUTPUT_OBSERVE {now} {live:.12f}')
+        assert not observed['apply'] and observed['reason']=='output_observed',observed
+        assert observed['curve']==old['curve'] and not observed['points'],observed
+        for offset in [0,50,100]:
+            s=ask(p,f'FRAME3 {now+offset} 1 1 7.6531024 15 0 30 80 0 {live:.12f} 0.000366256 1 0 0 6.05')
+            assert not s['apply'] and s['reason']=='external_output' and abs(s['target']-live)<1e-9,s
+            assert s['settled'] and not s['animating'] and s['storage']=='new',s
+    # A real ambient change crosses the target hysteresis and starts at actual
+    # output. The ordinary observations above have not frozen environmental EMA.
+    for index in range(1,81):
+        now+=800
+        s=ask(p,f'FRAME3 {now} 1 1 15 15 0 30 80 0 {live:.12f} 0.000366256 1 0 0 15')
+        if s['reason']!='external_output':
+            break
+    assert s['apply'] and s['animating'] and abs(s['target']-live)<1e-9,s
+    now+=50
+    s=ask(p,f'FRAME3 {now} 1 1 15 15 0 30 80 0 {live:.12f} 0.000366256 1 0 0 15')
+    assert live<s['target']<=(live+.005)*1.6**.05-.005+1e-9,s
+    # A protection pause clears the observation latch and resumes from live.
+    ask(p,f'OUTPUT_OBSERVE {now} {live:.12f}')
+    ask(p,'OUTPUT_PAUSE');now+=50
+    s=ask(p,f'FRAME3 {now} 1 1 15 15 0 30 80 0 0.02 0.000366256 1 0 0 15')
+    assert s['apply'] and s['reason']=='reference_resume' and abs(s['target']-.02)<1e-9,s
+    # A coherent ordinary observation can resolve a transient read pause. It
+    # must not inherit DIM's active-resume behavior for the unchanged target.
+    ask(p,'OUTPUT_PAUSE');now+=5000
+    ask(p,f'OUTPUT_OBSERVE {now} 0.025')
+    s=ask(p,f'FRAME3 {now} 1 1 15 15 0 30 80 0 0.025 0.000366256 1 0 0 15')
+    assert not s['apply'] and s['reason']=='external_output' and abs(s['target']-.025)<1e-9,s
+    assert s['settled'] and not s['animating'],s
+    p.stdin.close();assert p.wait(timeout=5)==0
+print('Ordinary OEM changes hold actual output until the module target changes')
