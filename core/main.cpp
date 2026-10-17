@@ -75,7 +75,8 @@ int main(int argc,char**argv) {
                     end();core.pauseOutput();last.apply=false;last.reason="output_wait";
                 } else if(cmd=="OUTPUT_SYNC") {
                     int64_t now;double value;
-                    if(!(in>>now>>value)||!hasUser)throw std::runtime_error("invalid output sync");end();
+                    if(!(in>>now>>value)||!hasUser)throw std::runtime_error("invalid output sync");
+                    end();
                     core.syncOutput(now,value);last={false,value,"output_sync"};
                 } else if(cmd=="SLIDER_BASELINE") {
                     int value;if(!(in>>value)||value<0||value>255||!hasUser)throw std::runtime_error("invalid slider baseline");end();
