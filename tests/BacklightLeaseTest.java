@@ -79,18 +79,52 @@ public final class BacklightLeaseTest {
             reference.referenceMode();reference.ready(10000,.8f);check(reference.ready(11000,.8f),"reference scale need not match stale framework");
             reference.write(.3f,1);
             check(reference.requested()==200,"reference acquisition retains live baseline");
-            reference.ready(11100,.8f);reference.write(.3f,1);set(panel,"actual_brightness",300);
-            check(reference.requested()==300,"changed target advances after acquisition");
-            reference.suspend();check(reference.locked(),"sleep retains lease without writing");
+            reference.ready(11100,.8f);reference.write(.3f,1);set(panel,"actual_brightness",reference.lastWritten());
+            check(reference.requested()>200&&reference.requested()<211,"changed target advances within the physical upward bound");
+            reference.suspend();check(reference.locked()&&!reference.owned(),"sleep retains lease but ends the old output claim without writing");
             set(panel,"brightness",500);set(panel,"actual_brightness",500);
-            check(reference.ready(12000,.8f),"reference ownership does not follow framework transitions");
+            check(!reference.ready(12000,.8f)&&reference.ready(13000,.8f),"wake verifies a fresh live baseline instead of accepting old ownership");
             reference.write(.3f,1);
-            check(reference.requested()==500,"reference never chases external output when target has not changed");
+            check(reference.requested()==500&&!reference.faulted(),"wake acquisition preserves system wake brightness despite an old curve target");
             set(panel,"actual_brightness",100);
-            check(!reference.ready(12100,.8f)&&reference.holding()&&reference.locked(),"first driver mismatch only holds reference output");
-            check(!reference.ready(12600,.8f)&&reference.faulted()&&!reference.locked(),"confirmed driver mismatch releases reference lease once");
+            check(!reference.ready(13100,.8f)&&reference.holding()&&reference.locked(),"first driver mismatch only holds reference output");
+            check(!reference.ready(13600,.8f)&&reference.faulted()&&!reference.locked(),"confirmed driver mismatch releases reference lease once");
             reference.suspend();reference.released();set(panel,"actual_brightness",500);
             check(!reference.ready(20000,.8f)&&reference.faulted(),"sleep and ordinary release cannot reset fault");
+
+            set(panel,"brightness",300);set(panel,"actual_brightness",300);mode[0]="rw-r--r--";
+            reference=new DirectBacklight(root.toFile(),"panel0",root.resolve("direct-output.properties").toFile(),"main","boot",()->Long.parseLong(Files.readString(panel.resolve("actual_brightness")).trim()),access,true);
+            reference.referenceMode();reference.ready(21000,.8f);reference.ready(22000,.8f);reference.write(.3f,1);
+            set(panel,"brightness",150);set(panel,"actual_brightness",150);
+            int changesBeforeSync=changes[0];
+            check(reference.ready(22200,.8f)&&reference.externalChanged()&&!reference.faulted()&&reference.locked()&&mode[0].equals("r--r--r--"),"coherent external reference write retains the permission lease while awaiting core sync");
+            check(!reference.write(.25f,1)&&reference.requested()==150,"unacknowledged observation cannot be overwritten");
+            check(reference.acknowledgeExternal(reference.externalRevision())&&reference.write(.25f,1)&&reference.requested()<160,"synchronized ordinary output resumes only a bounded upward step");
+            check(changes[0]==changesBeforeSync&&reference.locked(),"ordinary external changes never release and reacquire permissions");
+            reference.released();
+
+            // A system update during first chmod occurs after the early snapshot.
+            set(panel,"brightness",300);set(panel,"actual_brightness",300);mode[0]="rw-r--r--";
+            final boolean[] mutateOnAcquire={true};
+            var lateAccess=new BacklightLease.Access(){
+                public String get(File f){return mode[0];}
+                public void set(File f,String m)throws IOException {
+                    mode[0]=m;changes[0]++;
+                    if(m.equals("r--r--r--")&&mutateOnAcquire[0]) {
+                        mutateOnAcquire[0]=false;BacklightLeaseTest.set(panel,"brightness",150);BacklightLeaseTest.set(panel,"actual_brightness",150);
+                    }
+                }
+            };
+            File lateJournal=root.resolve("direct-output.properties").toFile();
+            var acquisition=new DirectBacklight(root.toFile(),"panel0",lateJournal,"main","boot",()->Long.parseLong(Files.readString(panel.resolve("actual_brightness")).trim()),lateAccess,true);
+            acquisition.referenceMode();acquisition.ready(24000,.8f);acquisition.ready(25000,.8f);
+            check(!acquisition.write(.3f,1)&&acquisition.locked()&&!acquisition.owned()&&!acquisition.faulted()&&acquisition.requested()==150,"late first-acquisition change keeps the lease but does not write a stale baseline");
+            String preparedJournal=Files.readString(lateJournal.toPath());int preparedChanges=changes[0];
+            check(preparedJournal.contains("reference_no_restore")&&!acquisition.ready(25100,.8f)&&acquisition.ready(26100,.8f),"skipped first write has safe recovery metadata and requires a fresh baseline");
+            check(acquisition.write(.3f,1)&&acquisition.requested()==150&&changes[0]==preparedChanges,"retry preserves live output without reacquiring permissions");
+            check(preparedJournal.equals(Files.readString(lateJournal.toPath())),"retry reuses no-restore recovery instead of another durable write");
+            acquisition.released();DirectBacklight.restore(root.toFile(),lateJournal,"main","boot",true,true,.8f,1,()->150);
+            check(acquisition.requested()==150&&mode[0].equals("rw-r--r--")&&!lateJournal.exists(),"cleanup after an initially skipped write restores permissions only");
 
             // A real journal I/O failure restores acquired permissions and cannot retry.
             set(panel,"brightness",200);set(panel,"actual_brightness",200);mode[0]="rw-r--r--";
@@ -99,7 +133,7 @@ public final class BacklightLeaseTest {
             try{broken.write(.3f,1);throw new AssertionError("journal failure");}catch(IOException expected){}
             check(broken.faulted()&&!broken.locked()&&mode[0].equals("rw-r--r--")&&broken.requested()==200,"I/O failure leaves output untouched and unlocks");
             check(!broken.ready(40000,.2f),"I/O failure cannot automatically retry");
-            posix.set(file,"rw-r--r--");set(panel,"brightness",200);set(panel,"actual_brightness",200);
+            posix.set(file,"rw-r--r--");set(panel,"brightness",300);set(panel,"actual_brightness",300);
             File outputJournal=root.resolve("direct-output.properties").toFile();
             var referenceLive=new DirectBacklight(root.toFile(),"panel0",outputJournal,"main","boot",()->Long.parseLong(Files.readString(panel.resolve("actual_brightness")).trim()),posix,true);
             referenceLive.referenceMode();referenceLive.ready(41000,.8f);referenceLive.ready(42000,.8f);

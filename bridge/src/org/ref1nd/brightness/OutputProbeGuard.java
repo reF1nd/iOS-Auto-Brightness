@@ -44,6 +44,17 @@ public final class OutputProbeGuard {
         return true;
     }
 
+    /** A newer synchronous read supersedes an older in-flight diagnostic. */
+    public synchronized boolean supersede(long started,long completed,Result value) {
+        if(value==null||started<0||completed<started)throw new IllegalArgumentException("invalid probe observation");
+        if(started<requestedAt||completed<completedAt)return false;
+        expire(completed);
+        if(fault)return false;
+        generation++;pending=null;requestedAt=started;completedAt=completed;result=value;
+        if(value!=Result.UNKNOWN)trustedAt=completed;
+        return true;
+    }
+
     public synchronized State state(long now,boolean active) {
         if(now<0)throw new IllegalArgumentException("negative probe time");
         if(active&&activeAt<0)activeAt=now;

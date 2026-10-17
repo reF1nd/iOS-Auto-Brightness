@@ -84,6 +84,26 @@ public final class ProtectionPolicy {
         return Pattern.compile("(?m)^\\s*mBrightnessReason=automatic(?:[ \\t]+\\[[ \\t]*bcbc[ \\t]*\\])?[ \\t]*$").matcher(main).find()
             && Pattern.compile("(?m)^\\s*mTemporaryScreenBrightness[=:]\\s*NaN\\s*$").matcher(main).find();
     }
+    /** Positive DIM evidence only; this does not release backlight ownership. */
+    public static boolean referenceDimOutput(String dump) {
+        if(referenceOutputResult(dump)!=OutputProbeGuard.Result.SAFE)return false;
+        String main=mainController(dump);if(main==null)return false;
+        Matcher id=Pattern.compile("(?m)^[ \\t]*mDisplayId[ \\t]*[=:][^\\r\\n]*$").matcher(main);
+        if(!id.find()||!id.group().matches("[ \\t]*mDisplayId[ \\t]*=[ \\t]*0[ \\t]*")||id.find())return false;
+        Matcher reason=Pattern.compile("(?m)^[ \\t]*mBrightnessReason[ \\t]*[=:][^\\r\\n]*$").matcher(main);
+        if(!reason.find())return false;
+        String line=reason.group();if(reason.find())return false;
+        Matcher value=Pattern.compile("[ \\t]*mBrightnessReason[ \\t]*=[ \\t]*(?:automatic|temporary)[ \\t]+\\[([^\\]]*)\\][ \\t]*").matcher(line);
+        if(!value.matches())return false;
+        boolean dim=false;
+        for(String modifier:value.group(1).trim().split("\\s+")) {
+            if(modifier.equals("dim"))dim=true;
+            else if(!modifier.isEmpty()&&!modifier.equals("bcbc"))return false;
+        }
+        Matcher cap=Pattern.compile("(?m)^[ \\t]*mCachedBrightnessInfo\\.brightnessMaxReason[^\\r\\n]*$").matcher(main);
+        if(!cap.find()||!cap.group().matches("[ \\t]*mCachedBrightnessInfo\\.brightnessMaxReason[ \\t]*=[ \\t]*0[ \\t]*")||cap.find())return false;
+        return dim;
+    }
     /**
      * Read-only observation can exercise learning when an emulator reports manual
      * output despite its automatic setting. This never authorizes a backlight write;

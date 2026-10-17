@@ -189,12 +189,24 @@ bool Controller::slider(int value,int64_t wallTime) {
 void Controller::pauseOutput() {
     if(!reference)return;
     reference_paused_=true;reference_handover_=false;
+    last_reference_output_=-1;reference_ramp_elapsed_=0;
     ramp_duration_=0;ramp_target_=-1;
+}
+void Controller::syncOutput(int64_t now,double liveValue) {
+    if(!reference||now<0||!std::isfinite(liveValue)||liveValue<0||liveValue>1)
+        throw std::runtime_error("invalid reference output sync");
+    // An external coherent write is an output observation, never a new ambient
+    // sample or a preference. Keep the curve and any existing pause unchanged.
+    output_=liveValue;ramp_from_=liveValue;ramp_target_=-1;ramp_at_=now;
+    ramp_duration_=0;reference_ramp_elapsed_=0;last_reference_output_=now;
+    // The next FRAME starts at this output even for a small downward correction.
+    reference_handover_=true;
 }
 void Controller::reset() {
     rear_accepted_=-1;rear_candidate_=-1;rear_front_=-1;rear_since_=0;rear_pending_=false;
     reference_paused_=false;reference_handover_=false;
     last_reference_filter_=-1;reference_curve_target_=-1;
+    last_reference_output_=-1;reference_ramp_elapsed_=0;
     last_slider_=-1;frame_={};smooth_=-1;output_=-1;candidate_=-1;last_=0;hold_until_=0;
     candidate_since_=0;wake_until_=0;trend_.clear();fast_dark_=false;sunlight_=false;solar_decay_=false;dark_pending_=false;dark_since_=-1;
     near_since_=-1;far_since_=-1;proximity_confirmed_=false;front_baseline_=-1;
@@ -239,6 +251,11 @@ Output Controller::step(const Frame& f) {
         if(far_since_>=0)far_since_=f.now;
         trend_.clear();fast_until_=0;
     }
+    // Animation has its own clock: a slow binder/readback frame must not spend
+    // the entire pause catching up to an old endpoint. Zero is a valid timestamp.
+    const int64_t outputDt=reference&&last_reference_output_>=0&&f.now>=last_reference_output_?
+        std::min<int64_t>(100,f.now-last_reference_output_):0;
+    if(reference)last_reference_output_=f.now;
     // Brief proximity pulses must not expose a different system brightness.
     // Freeze an existing output (and learning) while confirming obstruction.
     // State/safety exits above always win, including a newly lowered cap.
@@ -274,10 +291,12 @@ Output Controller::step(const Frame& f) {
     const double frontLux=dual?f.front:lux;
     const double frontBaseline=dual?front_baseline_:smooth_;
 
-    // A stationary front with a pulsing rear must not drive repeated bright/dark
-    // cycles. Still accept a stable rear source, real front changes, or sunlight.
-    if(reference&&dual&&std::isfinite(f.back)&&f.back>=0) {
-        if(rear_accepted_<0||std::abs(std::log1p(frontLux)-std::log1p(rear_front_))>std::log(1.2)||lux>=config.high_lux_threshold) {
+    // The bridge bounds the brighter rear's contribution to the front-led
+    // coordinate. Confirm a large rear-only change before using that coordinate;
+    // genuine front changes and small variations still take the ordinary EMA.
+    if(reference&&dual&&std::isfinite(f.back)&&f.back>=0&&f.back<=200000) {
+        const bool bothDark=frontLux<=1&&f.back<=1;
+        if(rear_accepted_<0||bothDark||std::abs(std::log1p(frontLux)-std::log1p(rear_front_))>std::log(1.2)) {
             rear_accepted_=lux;rear_front_=frontLux;rear_candidate_=-1;rear_pending_=false;
         } else if(std::abs(std::log1p(lux)-std::log1p(rear_accepted_))>std::log(1.25)) {
             if(rear_candidate_<0||f.now<rear_since_||std::abs(std::log1p(lux)-std::log1p(rear_candidate_))>std::log(1.2)) {rear_candidate_=lux;rear_since_=f.now;}
@@ -286,9 +305,6 @@ Output Controller::step(const Frame& f) {
             else {rear_accepted_=lux;rear_candidate_=-1;}
         } else {rear_accepted_=lux;rear_candidate_=-1;rear_pending_=false;}
     } else {rear_accepted_=-1;rear_candidate_=-1;rear_front_=-1;rear_pending_=false;}
-
-    // A covered rear sensor is normal on a desk. It can extend spike
-    // confirmation, but must never cap a stable front-light measurement.
     const double filterPeriod=reference?.8:.25;
     const bool filterDue=!reference||smooth_<0||last_reference_filter_<0||f.now<last_reference_filter_||f.now-last_reference_filter_>=800;
     double dt=reference?(last_reference_filter_<0?filterPeriod:std::clamp((f.now-last_reference_filter_)/1000.0,0.0,8.0)):
@@ -305,7 +321,7 @@ Output Controller::step(const Frame& f) {
     // sub-lux noise or a covered rear sensor as strong contrary evidence; an
     // absolute 20-lux gate previously discarded a stable 19-lux rear reading.
     const bool rearValid=std::isfinite(f.back)&&f.back>=0&&f.back<=200000;
-    const bool rearBright=rearValid&&(f.back+1)/(frontLux+1)>2;
+    const bool rearBright=!reference&&rearValid&&(f.back+1)/(frontLux+1)>2;
     if(guard_confirmed_&&frontLux>=frontBaseline*.8)guard_confirmed_=false;
     if(!dark_pending_&&!guard_confirmed_&&frontBaseline>=1&&(frontLux+1)/(frontBaseline+1)<.65&&rearBright&&(!dual||lux<smooth_*.8)) {
         dark_pending_=true;dark_since_=-1;guard_front_=frontBaseline;guard_back_=rearBaseline;
@@ -338,12 +354,11 @@ Output Controller::step(const Frame& f) {
             last_high_confirm_=f.now;high_confirm_=std::min(2,high_confirm_+1);
         }
     } else clearStrong();
-    const bool bothBright=dual&&rearValid&&f.back>=config.high_lux_threshold&&frontLux>=config.high_lux_threshold;
+    const bool bothBright=!reference&&dual&&rearValid&&f.back>=config.high_lux_threshold&&frontLux>=config.high_lux_threshold;
     const bool strongConfirmed=strong&&high_confirm_>=2&&f.now-strong_since_>=(bothBright?250:750);
     if(filterDue&&strongConfirmed)smooth_=std::max(smooth_,lux);
-    // Reference spike parameters bound the next filter input; they are not
-    // confirmation delays. Rear pulse/occlusion confirmation above remains in
-    // force so a transient rear event cannot become a new ambient baseline.
+    // Reference spike parameters bound the selected source's next filter input;
+    // they are not confirmation delays or a second rear-sensor input.
     if(reference&&smooth_>=1)lux=std::clamp(lux,smooth_*config.spike_down,std::max(5.0,smooth_*config.spike_up));
     if(filterDue) {
         trend_.push_back(lux);if(trend_.size()>5)trend_.erase(trend_.begin());
@@ -425,6 +440,8 @@ Output Controller::step(const Frame& f) {
         output_=std::clamp(f.current,f.minimum,cap);desired_=target;
         ramp_from_=output_;ramp_target_=target;ramp_at_=f.now;
         ramp_duration_=std::max(400,referenceRamp(std::abs(target-output_),target>output_));
+        if(target>output_&&!sunlight_&&!strongConfirmed)ramp_duration_=std::max<int64_t>(800,ramp_duration_);
+        reference_ramp_elapsed_=0;
         reference_paused_=false;reference_handover_=true;
     }
     if(output_<0)output_=std::clamp(f.current,f.minimum,cap);
@@ -440,19 +457,31 @@ Output Controller::step(const Frame& f) {
         (reference&&ramp_duration_>0&&std::abs(target-output_)>1e-9);
     if(changed) {
         bool reverse=ramp_target_>=0 && (target-output_)*(ramp_target_-output_)<0;
-        if(ramp_duration_==0 || reverse || (!reference_handover_&&((fast_dark_&&!solar_decay_&&ramp_duration_>200) || (fastBright&&ramp_duration_>400)))) {
+        bool restarted=referenceStart;
+        // A same-direction filter update keeps elapsed animation time. Restarting
+        // every 800ms sample can otherwise freeze output when driver polling is
+        // equally slow. The per-frame rise bound below limits moving endpoints.
+        if(ramp_duration_==0 || reverse || (!reference&&!reference_handover_&&((fast_dark_&&!solar_decay_&&ramp_duration_>200) || (fastBright&&ramp_duration_>400)))) {
             // Time spent asleep preceded this target; it must not consume the new ramp.
             ramp_from_=output_;ramp_at_=reference?f.now:f.now-static_cast<int64_t>(std::min(dt,.25)*1000);
             double distance=std::abs(target-output_);
             ramp_duration_=solar_decay_&&target<output_?3000:(fastBright?400:(rearBright&&target<output_?3000:(fast_dark_&&target<output_?200:(sunlight_?1000:static_cast<int64_t>(std::clamp(distance*8000,400.0,3000.0))))));
             if(reference)ramp_duration_=sunlight_?1000:(fast_dark_&&target<output_?200:referenceRamp(distance,target>output_));
             if(reference_handover_)ramp_duration_=std::max<int64_t>(400,ramp_duration_);
+            if(reference&&target>output_&&!sunlight_&&!strongConfirmed)ramp_duration_=std::max<int64_t>(800,ramp_duration_);
+            if(reference){reference_ramp_elapsed_=0;restarted=true;}
         }
         ramp_target_=target;
-        double t=ramp_duration_==0?1:std::clamp(static_cast<double>(f.now-ramp_at_)/ramp_duration_,0.0,1.0);
+        if(reference&&!restarted)reference_ramp_elapsed_=std::min(ramp_duration_,reference_ramp_elapsed_+outputDt);
+        double t=ramp_duration_==0?1:std::clamp(static_cast<double>(reference?reference_ramp_elapsed_:f.now-ramp_at_)/ramp_duration_,0.0,1.0);
         double eased=t<.5?4*t*t*t:1-std::pow(-2*t+2,3)/2;
         double previous=output_;
         output_=std::clamp(ramp_from_+(ramp_target_-ramp_from_)*eased,std::min(previous,target),std::max(previous,target));
+        // Absolute raw distance alone makes a doubling in a dark room look
+        // tiny. Bound ordinary rises to 60% per second, with a small pedestal
+        // so the zero-lux baseline can still rise. Safety caps below win.
+        if(reference&&output_>previous&&!sunlight_&&!strongConfirmed)
+            output_=outputDt==0?previous:std::min(output_,(previous+.005)*std::pow(1.6,outputDt/1000.0)-.005);
         // Moving endpoints must not bypass the downward slew limit. Ignore
         // sleep time before a new target; system/low-battery caps below win.
         if(!reference&&output_<previous)output_=std::max(output_,previous*std::pow(.8,std::min(dt,.25)));

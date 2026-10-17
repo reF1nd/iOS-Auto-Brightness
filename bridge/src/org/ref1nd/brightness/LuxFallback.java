@@ -26,8 +26,21 @@ public final class LuxFallback {
         catch(RuntimeException e){return -1;}
     }
     public static Sample select(float front, float rear, Sample fallback, long now, long sessionStart) {
-        // Both valid lux sensors participate continuously, including at wake.
-        if(valid(front)&&valid(rear))return new Sample(Math.max(front,rear),now,"dual_max_v1");
+        return select(front,rear,fallback,now,sessionStart,false);
+    }
+    public static Sample select(float front,float rear,Sample fallback,long now,long sessionStart,boolean primaryPending) {
+        // A registered primary sensor gets a bounded first-event window. A rear
+        // callback arriving first must not seed the new session at full rear lux.
+        if(primaryPending&&!valid(front))return new Sample(-1,now,"front_warmup");
+        // A brighter rear contributes a quarter of the log-lux contrast. Bound
+        // the correction so a lamp behind a dark screen cannot replace the
+        // front with the full rear value. This is our generic policy, not an OEM
+        // coefficient recovered from a vendor implementation.
+        if(valid(front)&&valid(rear)) {
+            double base=Math.log1p(front),contrast=Math.max(0,Math.log1p(rear)-base);
+            float lux=(float)Math.expm1(base+Math.min(.25*contrast,Math.log(3)));
+            return new Sample(Math.max(front,Math.min(rear>front?rear:front,lux)),now,"dual_weighted_v1");
+        }
         if(valid(front))return new Sample(front,now,"front");
         if(valid(rear))return new Sample(rear,now,"rear");
         if(fallback!=null&&fallback.usable(now,sessionStart))return fallback;

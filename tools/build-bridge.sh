@@ -33,5 +33,7 @@ javac -cp build/bridge/classes -d build/bridge/test-classes tests/OutputProbeGua
 java -cp build/bridge/classes:build/bridge/test-classes OutputProbeGuardTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/ReferenceSliderSamplingTest.java
 java -cp build/bridge/classes:build/bridge/test-classes ReferenceSliderSamplingTest
+javac -cp build/bridge/classes -d build/bridge/test-classes tests/ReferenceOutputHoldTest.java
+java -cp build/bridge/classes:build/bridge/test-classes ReferenceOutputHoldTest
 javac -cp build/bridge/classes -d build/bridge/test-classes tests/BacklightLeaseTest.java
 java -cp build/bridge/classes:build/bridge/test-classes BacklightLeaseTest

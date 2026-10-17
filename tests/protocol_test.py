@@ -198,8 +198,51 @@ with tempfile.TemporaryDirectory() as state:
     assert s['apply'] and abs(s['target']-.03)<1e-9 and s['animating'],s
     ask(p,'SLIDER 80 10000');s=ask(p,'SLIDER 110 11000')
     assert s['storage']=='saved_reference_curve' and len(s['points'])==1,s
-    first=s['curve'];p.kill();p.wait(timeout=5)
+    first=s['curve'];saved_points=s['points']
+    synced=ask(p,'OUTPUT_SYNC 1100 0.03')
+    assert not synced['apply'] and synced['reason']=='output_sync',synced
+    assert synced['curve']==first and synced['points']==saved_points and synced['storage']=='saved_reference_curve',synced
+    p.kill();p.wait(timeout=5)
     p=ref_start();ask(p,'POLICY v68');s=ask(p,'USER 0')
     assert s['storage']=='loaded' and s['curve']==first,s
     assert 'IAB_CURVE_OBSERVATIONS_V2' in ask(p,'EXPORT')['data']
     p.kill();p.wait(timeout=5)
+
+# Weighted rear assistance must not relabel old dual-max observations.
+with tempfile.TemporaryDirectory() as state:
+    p=start(); ask(p,'POLICY v68'); ask(p,'USER 0')
+    ask(p,'SOURCE dualmaxv1')
+    ask(p,'FRAME 1000 1 1 24.479 24.479 0 30 80 0 0.13 0.001 1 0')
+    ask(p,'SLIDER_BASELINE 80'); old=ask(p,'SLIDER 110 10000')
+    assert len(old['points'])==1,old
+    old_curve=old['curve']
+    primary=ask(p,'SOURCE dualweightedv1')
+    assert primary['storage']=='new' and primary['points']==[],primary
+    p.kill();p.wait(timeout=5)
+    p=start();ask(p,'POLICY v68');ask(p,'USER 0');primary=ask(p,'SOURCE dualweightedv1')
+    assert primary['points']==[],primary
+    retained=ask(p,'SOURCE dualmaxv1')
+    assert retained['storage']=='loaded' and retained['curve']==old_curve,retained
+    p.kill();p.wait(timeout=5)
+print('Weighted selection does not consume or delete dual-max observations')
+
+# Coherent external output rebases the active ramp without teaching or releasing
+# the controller. The live raw499 must not jump to its pending raw1304 target.
+with tempfile.TemporaryDirectory() as state:
+    p=start();ask(p,'POLICY v68');ask(p,'USER 0')
+    old=ask(p,f'FRAME2 1000 1 1 11.720 0 0 30 18 0 {2138/16383:.12f} 0.000366256 1 0 0')
+    assert abs(old['desired']*16383-1304)<1,old
+    live=499/16383
+    synced=ask(p,f'OUTPUT_SYNC 1000 {live:.12f}')
+    assert not synced['apply'] and synced['lux']==old['lux'] and synced['curve']==old['curve'],synced
+    s=ask(p,f'FRAME2 1000 1 1 11.720 0 0 30 18 0 {live:.12f} 0.000366256 1 0 0')
+    assert s['apply'] and s['animating'] and abs(s['target']-live)<1e-9,s
+    previous=s['target']
+    for now in range(1050,5050,50):
+        s=ask(p,f'FRAME2 {now} 1 1 11.720 0 0 30 18 0 {live:.12f} 0.000366256 1 0 0')
+        assert previous-1e-9<=s['target']<=(previous+.005)*1.6**.05-.005+1e-9,s
+        assert not s['points'] and s['storage']=='new',s
+        previous=s['target']
+    assert abs(s['target']-old['desired'])<1e-9,s
+    p.stdin.close();assert p.wait(timeout=5)==0
+print('External output synchronization preserves the curve and resumes gradual control')

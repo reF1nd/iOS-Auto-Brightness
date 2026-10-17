@@ -77,6 +77,9 @@ public final class Bridge implements SensorEventListener {
     boolean referenceLearningAvailable=false;
     String outputStatus="backlight_unavailable";
     final OutputProbeGuard outputProbe=new OutputProbeGuard();
+    final ReferenceOutputHold referenceOutputHold=new ReferenceOutputHold();
+    long outputEvidenceStarted=-1;
+    OutputProbeGuard.Result outputEvidenceResult=OutputProbeGuard.Result.UNKNOWN;
     boolean probeSession=false, outputLearningSafe=false, observationLearningSafe=false, outputSliderActive=false;
     long referenceAwakeAt=-1, referenceTickAt=-10000;
     volatile String outputFault="";
@@ -278,7 +281,7 @@ public final class Bridge implements SensorEventListener {
         sensorChoice=choice;sensorConfigText=text;learningSource="";pending=null;manual.cancel();settingsLearning.reset();
     }
     String sourceScope(String source) throws Exception {
-        if(source.equals("dual_max_v1"))return SensorChoice.scope(source+":"+front.getName()+":"+front.getVendor()+":"+back.getName()+":"+back.getVendor());
+        if(source.equals("dual_weighted_v1"))return SensorChoice.scope(source+":"+front.getName()+":"+front.getVendor()+":"+back.getName()+":"+back.getVendor());
         if(source.equals("front")&&front==sensors.getDefaultSensor(Sensor.TYPE_LIGHT))return "default";
         return SensorChoice.scope(source+":"+(source.equals("front")?front.getName()+":"+front.getVendor():source.equals("rear")?back.getName()+":"+back.getVendor():sensorChoice.sysfs+":"+(front==null?"auto":front.getName())));
     }
@@ -286,12 +289,41 @@ public final class Bridge implements SensorEventListener {
         OutputProbeGuard.Ticket ticket=outputProbe.begin(now);
         if(ticket==null)return;
         new Thread(()->{
-            OutputProbeGuard.Result found=OutputProbeGuard.Result.UNKNOWN;boolean learning=false,observationLearning=false,slider=false;
-            try{String dump=displayDump();found=ProtectionPolicy.referenceOutputResult(dump);learning=ProtectionPolicy.referenceLearningOutput(dump);observationLearning=ProtectionPolicy.referenceObservationLearningOutput(dump);slider=InteractionGuard.temporary(dump)==1;}catch(Exception ignored){}
-            final OutputProbeGuard.Result value=found;final boolean learn=learning,observeLearn=observationLearning,drag=slider;
+            OutputProbeGuard.Result found=OutputProbeGuard.Result.UNKNOWN;boolean learning=false,observationLearning=false,slider=false,dim=false;
+            try{String dump=displayDump();found=ProtectionPolicy.referenceOutputResult(dump);learning=ProtectionPolicy.referenceLearningOutput(dump);observationLearning=ProtectionPolicy.referenceObservationLearningOutput(dump);slider=InteractionGuard.temporary(dump)==1;dim=ProtectionPolicy.referenceDimOutput(dump);}catch(Exception ignored){}
+            final OutputProbeGuard.Result value=found;final boolean learn=learning,observeLearn=observationLearning,drag=slider,dimming=dim;
             final long completedAt=SystemClock.elapsedRealtime();
-            handler.post(()->{if(closing.get())return;if(outputProbe.complete(ticket,completedAt,value)){outputLearningSafe=learn;observationLearningSafe=observeLearn;outputSliderActive=drag;if(value==OutputProbeGuard.Result.UNSAFE)wake();else wakeAmbient();}});
+            handler.post(()->{if(closing.get())return;if(outputProbe.complete(ticket,completedAt,value)){outputEvidence(ticket.startedAt,completedAt,value,learn,observeLearn,drag,dimming);if(value==OutputProbeGuard.Result.UNSAFE||referenceOutputHold.holdWrites())wake();else wakeAmbient();}});
         },"iab-direct-protection").start();
+    }
+    void outputEvidence(long started,long completed,OutputProbeGuard.Result value,boolean learning,boolean observationLearning,boolean slider,boolean dim) {
+        if(started<outputEvidenceStarted)return;
+        outputEvidenceStarted=started;outputEvidenceResult=value;
+        outputLearningSafe=learning;observationLearningSafe=observationLearning;outputSliderActive=slider;
+        referenceOutputHold.observe(completed,slider,dim,learning);
+    }
+    void refreshReferenceInteraction() {
+        // A coherent changed raw value can be the first sign of a drag, before
+        // the periodic probe arrives. Read intent; never infer learning from raw.
+        long started=SystemClock.elapsedRealtime();
+        OutputProbeGuard.Result found=OutputProbeGuard.Result.UNKNOWN;
+        boolean learning=false,observationLearning=false,slider=false,dim=false;
+        try{String dump=displayDump();found=ProtectionPolicy.referenceOutputResult(dump);learning=ProtectionPolicy.referenceLearningOutput(dump);observationLearning=ProtectionPolicy.referenceObservationLearningOutput(dump);slider=InteractionGuard.temporary(dump)==1;dim=ProtectionPolicy.referenceDimOutput(dump);}catch(Exception ignored){}
+        long completed=SystemClock.elapsedRealtime();
+        if(outputProbe.supersede(started,completed,found))
+            outputEvidence(started,completed,found,learning,observationLearning,slider,dim);
+    }
+    void syncDirectOutput(long now,float framework) throws Exception {
+        if(!referenceControl||observe||direct==null||!direct.externalChanged())return;
+        long revision=direct.externalRevision();
+        result=request(String.format(Locale.ROOT,"OUTPUT_SYNC %d %.9f",now,direct.frameBrightness(framework)));
+        if(!direct.acknowledgeExternal(revision))throw new IOException("backlight sample changed during output sync");
+    }
+    void finishReferenceSample(long now,float current,boolean directReady) throws Exception {
+        boolean resume=referenceOutputHold.awaitingSample()&&!referenceOutputHold.holdFrames();
+        referenceOutputHold.sampleFinished();
+        if(resume&&!observe&&directReady)
+            result=request(String.format(Locale.ROOT,"OUTPUT_SYNC %d %.9f",now,direct.frameBrightness(current)));
     }
     void latchOutputFault(String reason) throws Exception {
         if(observe)return;
@@ -691,6 +723,8 @@ public final class Bridge implements SensorEventListener {
                 clearOverride();user=currentUser;userSerial=currentSerial;pending=null;lastEvent=System.currentTimeMillis();
                 learningLux.reset();manual.cancel();settingsLearning.reset();interaction.reset();
                 sliderSampling.reset();
+                outputProbe.invalidate();referenceOutputHold.reset();outputEvidenceStarted=-1;outputEvidenceResult=OutputProbeGuard.Result.UNKNOWN;
+                outputLearningSafe=observationLearningSafe=outputSliderActive=false;referenceAwakeAt=-1;probeSession=false;
                 if(direct!=null)direct.learning.reset();
                 result=request("USER "+userSerial);
                 File legacy=new File(state,"legacy-offset.dat");
@@ -706,6 +740,7 @@ public final class Bridge implements SensorEventListener {
             boolean session=automatic&&on;
             if(session!=probeSession) {
                 outputProbe.invalidate();outputLearningSafe=observationLearningSafe=outputSliderActive=false;probeSession=session;
+                referenceOutputHold.reset();outputEvidenceStarted=-1;outputEvidenceResult=OutputProbeGuard.Result.UNKNOWN;
                 referenceAwakeAt=session?now:-1;sliderSampling.reset();
                 if(direct!=null)direct.learning.reset();
             }
@@ -736,21 +771,27 @@ public final class Bridge implements SensorEventListener {
             if(probeState==OutputProbeGuard.State.FAULT)latchOutputFault("output_probe_timeout");
             boolean directReady=!observe&&direct!=null&&session&&outputFault.isEmpty()&&protectionReason.isEmpty()
                 &&!blocked&&probeState!=OutputProbeGuard.State.UNSAFE&&direct.ready(now,current);
+            if(directReady&&direct.externalChanged()){
+                refreshReferenceInteraction();now=SystemClock.elapsedRealtime();heartbeat=now;
+                probeState=outputProbe.state(now,direct.locked());
+                if(probeState==OutputProbeGuard.State.FAULT)latchOutputFault("output_probe_timeout");
+            }
             if(direct!=null&&direct.faulted())latchOutputFault(direct.status);
             if(direct!=null)outputStatus=direct.status;
             // Direct writes bypass framework application of limits; require a cap reason
             // plus a recent unmodified automatic output and verified driver mapping.
             if(brightnessMaxReason<0)outputStatus="direct_cap_reason_unavailable";
-            boolean directBlocked=!directReady||brightnessMaxReason<0||probeState!=OutputProbeGuard.State.SAFE||!outputFault.isEmpty();
+            boolean directBlocked=!directReady||brightnessMaxReason<0||probeState!=OutputProbeGuard.State.SAFE||outputEvidenceResult!=OutputProbeGuard.Result.SAFE||!outputFault.isEmpty();
             boolean learningBlocked=blocked||!protectionReason.isEmpty();
-            boolean releaseRequired=learningBlocked||probeState==OutputProbeGuard.State.UNSAFE||!outputFault.isEmpty();
-            blocked=learningBlocked||(!observe&&directBlocked);
+            boolean releaseRequired=blocked||!protectionReason.isEmpty()||probeState==OutputProbeGuard.State.UNSAFE||outputEvidenceResult==OutputProbeGuard.Result.UNSAFE||!outputFault.isEmpty();
+            blocked=learningBlocked||(!observe&&(directBlocked||referenceOutputHold.holdFrames()));
             frameBlocked=blocked;
             if(!protectionReason.isEmpty()){eventStatus="paused_system_protection";clearOverride();pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();learningLux.reset();}
             // On-change light sensors may be silent while stable; registration stays active.
             float primary=frontReading.effective(now), backLux=backReading.effective(now);
             if(registered&&(!sensorChoice.sysfs.isEmpty()||(!LuxFallback.valid(primary)&&!LuxFallback.valid(backLux))))requestFallback(now);
-            LuxFallback.Sample selected=LuxFallback.select(sensorChoice.sysfs.isEmpty()?primary:-1,sensorChoice.sysfs.isEmpty()?backLux:-1,fallbackSample,now,sensorSession);
+            boolean primaryPending=sensorChoice.sysfs.isEmpty()&&frontReading.isRegistered()&&frontReading.age(now)<0&&now>=sensorSession&&now-sensorSession<2000;
+            LuxFallback.Sample selected=LuxFallback.select(sensorChoice.sysfs.isEmpty()?primary:-1,sensorChoice.sysfs.isEmpty()?backLux:-1,fallbackSample,now,sensorSession,primaryPending);
             float lux=registered?selected.lux:-1;luxSource=registered?selected.source:"suspended";
             if(lux>=0) {
                 String scope=sourceScope(luxSource);
@@ -760,7 +801,8 @@ public final class Bridge implements SensorEventListener {
             learningLux.observe(lux,now,System.currentTimeMillis());
             eligible=automatic&&on&&!learningBlocked&&!near&&lux>=0;
             if(interaction.waiting()){request("HOLD "+now);probeInteraction(now);}
-            result=request(String.format(Locale.ROOT,"FRAME3 %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d %d %.8f",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,(direct!=null&&!observe?direct.frameBrightness(current):current),minimum,maximum,blocked?1:0,Calendar.getInstance().get(Calendar.HOUR_OF_DAY),luxSource.equals("dual_max_v1")?primary:-1));
+            if(directReady)syncDirectOutput(now,current);
+            result=request(String.format(Locale.ROOT,"FRAME3 %d %d %d %.8f %.8f %d %.4f %d %d %.9f %.9f %.9f %d %d %.8f",now,automatic?1:0,on?1:0,lux,backLux,near?1:0,temperature,battery,charging?1:0,(direct!=null&&!observe?direct.frameBrightness(current):current),minimum,maximum,blocked?1:0,Calendar.getInstance().get(Calendar.HOUR_OF_DAY),luxSource.equals("dual_weighted_v1")?primary:-1));
             if(result.optString("reason").startsWith("proximity")||result.optBoolean("ambient_guard")||!result.optBoolean("enabled")){eligible=false;learningLux.reset();}
             if(!automatic||!on||!result.optBoolean("enabled")){pending=null;manual.cancel();settingsLearning.reset();lastEvent=System.currentTimeMillis();}
             if(referenceControl) {
@@ -770,7 +812,7 @@ public final class Bridge implements SensorEventListener {
                 try {
                     int value=Integer.parseInt(slider);
                     referenceLearningAvailable=value>=0&&value<=255;
-                    if(!referenceLearningAvailable)eventStatus="reference_slider_range_unsupported";
+                    if(!referenceLearningAvailable){eventStatus="reference_slider_range_unsupported";finishReferenceSample(now,current,directReady);}
                     else {
                         boolean sampleSession=eligible&&result.optBoolean("enabled")&&result.optBoolean("learning_enabled")
                             &&referenceAwakeAt>=0&&now-referenceAwakeAt>=8000&&outputFault.isEmpty();
@@ -778,16 +820,22 @@ public final class Bridge implements SensorEventListener {
                         // Neither is a reason to consume a user's changed setting.
                         boolean learningProbeSafe=observe?observationLearningSafe:outputLearningSafe;
                         boolean learningProbeFresh=outputProbe.lastCompletedAt()>=0&&now-outputProbe.lastCompletedAt()<=OutputProbeGuard.FRESH_MS;
+                        boolean deferred=outputEvidenceResult==OutputProbeGuard.Result.UNKNOWN||referenceOutputHold.dragging()
+                            ||(referenceOutputHold.awaitingSample()&&!referenceOutputHold.holdFrames());
                         boolean discard=!sampleSession||(!observe&&(probeState==OutputProbeGuard.State.UNSAFE||probeState==OutputProbeGuard.State.FAULT))
-                            ||(learningProbeFresh&&(probeState==OutputProbeGuard.State.SAFE||probeState==OutputProbeGuard.State.UNSAFE)&&!learningProbeSafe&&!outputSliderActive);
+                            ||(!deferred&&learningProbeFresh&&(probeState==OutputProbeGuard.State.SAFE||probeState==OutputProbeGuard.State.UNSAFE)&&!learningProbeSafe&&!outputSliderActive);
                         boolean wait=!discard&&(!learningProbeFresh||!learningProbeSafe||!driverLearningReady(now)||outputSliderActive);
                         ReferenceSliderSampling.Action action=wait?ReferenceSliderSampling.Action.NONE:sliderSampling.observe(now,value,!discard);
                         if(action==ReferenceSliderSampling.Action.BASELINE)result=request("SLIDER_BASELINE "+value);
                         else if(action==ReferenceSliderSampling.Action.SAMPLE) {
                             result=request("SLIDER "+value+" "+System.currentTimeMillis());eventStatus=result.optString("storage");
                         }
+                        if(action!=ReferenceSliderSampling.Action.NONE&&referenceOutputHold.awaitingSample()&&!referenceOutputHold.holdFrames()) {
+                            finishReferenceSample(now,current,directReady);
+                        }
                     }
                 }catch(NumberFormatException e){referenceLearningAvailable=false;eventStatus="reference_slider_unavailable";}
+                if(!referenceLearningAvailable||!result.optBoolean("learning_enabled"))finishReferenceSample(now,current,directReady);
                 pending=null;manual.cancel();settingsLearning.reset();interaction.reset();
             } else {
                 // A real event supersedes heuristic capture; an explicitly armed
@@ -799,7 +847,7 @@ public final class Bridge implements SensorEventListener {
                     else settingsLearning(now,current);
                 }
             }
-            if(result.optBoolean("apply")&&!interaction.waiting()&&now-changedAt>=2000&&pending==null&&manual.at<0&&!blocked&&!observe) {
+            if(result.optBoolean("apply")&&!referenceOutputHold.holdWrites()&&!interaction.waiting()&&now-changedAt>=2000&&pending==null&&manual.at<0&&!blocked&&!observe) {
                 float target=(float)result.getDouble("target");
                 Object latest=call(global,"getBrightnessInfo",new Class<?>[]{int.class},0);
                 long writeNow=SystemClock.elapsedRealtime();
@@ -811,10 +859,24 @@ public final class Bridge implements SensorEventListener {
                 boolean systemSafe=latestOn&&latestAuto&&latestUnprotected;
                 boolean safe=systemSafe&&outputProbe.state(writeNow,direct.locked())==OutputProbeGuard.State.SAFE&&outputFault.isEmpty();
                 if(safe&&!externalBrightness(latest,writeNow)&&!interaction.waiting()&&direct.ready(writeNow,adjusted(latest))) {
-                    boolean accepted=direct.write(target,number(latest,"brightnessMaximum"));
+                    boolean changed=direct.externalChanged();
+                    if(changed){
+                        refreshReferenceInteraction();
+                        syncDirectOutput(SystemClock.elapsedRealtime(),adjusted(latest));
+                        if(outputEvidenceResult==OutputProbeGuard.Result.UNSAFE)clearOverride();
+                    }
+                    boolean accepted=!changed&&direct.write(target,number(latest,"brightnessMaximum"));
                     // Monitor system output independently of our raw-node target.
-                    if(accepted){interaction.wrote(writeNow,adjusted(latest),adjusted(latest));lastWrite=direct.lastWritten()/(float)direct.maximum;}
-                    else {result=request("OUTPUT_PAUSE");result.put("reason",direct.status);}
+                    if(accepted){
+                        interaction.wrote(writeNow,adjusted(latest),adjusted(latest));
+                        long acceptedRaw=direct.lastAcceptedRaw();lastWrite=acceptedRaw/(float)direct.maximum;
+                        // The writer may constrain an upward step using the live
+                        // node, or accept an unchanged target without writing.
+                        // Keep the core on that actual value, never its proposal.
+                        if(Math.abs(DirectBacklight.units(target,direct.maximum)-acceptedRaw)>1)
+                            result=request(String.format(Locale.ROOT,"OUTPUT_SYNC %d %.9f",writeNow,lastWrite));
+                    }
+                    else {if(!changed)result=request("OUTPUT_PAUSE");result.put("reason",direct.status);}
                     overridden=direct.owned();outputStatus=direct.status;
                 }else {
                     result=request("OUTPUT_PAUSE");
@@ -829,7 +891,7 @@ public final class Bridge implements SensorEventListener {
             // A pending probe, fresh wake sensor, or non-atomic read holds output
             // without unlocking the node or resetting the controller.
             bridgeError="";
-            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&manual.until==0&&now-changedAt>5000&&(luxSource.equals("front")||luxSource.equals("dual_max_v1"))&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
+            boolean steady=result.optBoolean("apply")&&result.optBoolean("settled")&&pending==null&&manual.until==0&&now-changedAt>5000&&(luxSource.equals("front")||luxSource.equals("dual_weighted_v1"))&&(result.optBoolean("ambient_guard")||!PollCadence.changed(lux,(float)result.optDouble("lux",-1)));
             pollMs=registered?(near?8000:cadence.next(now,lux,steady,battery>=0&&battery<15&&!charging)):5000;
             if(result.optString("reason").equals("proximity_pending")||result.optString("reason").equals("proximity_recovery"))pollMs=100;
             if(eligible&&result.optBoolean("settings_learning"))pollMs=Math.min(pollMs,1000);
@@ -839,6 +901,7 @@ public final class Bridge implements SensorEventListener {
             if(interaction.waiting())pollMs=100;
             else if(!referenceControl&&automatic&&on&&brightnessListener.equals("polling_fallback"))pollMs=Math.min(pollMs,250);
             if(interaction.waiting())result.put("reason","external_brightness_hold").put("apply",false);
+            if(!observe&&referenceOutputHold.holdWrites())result.put("reason",referenceOutputHold.reason()).put("apply",false);
             if(!observe&&automatic&&on&&directBlocked)result.put("reason",direct==null||!directReady||brightnessMaxReason<0?outputStatus:"direct_system_output_hold").put("apply",false);
             if(!protectionReason.isEmpty())result.put("reason",protectionReason).put("apply",false);
             if(!outputFault.isEmpty())result.put("reason","output_fault_latched").put("apply",false);
@@ -857,7 +920,7 @@ public final class Bridge implements SensorEventListener {
                 .put("manual_learning_available",!referenceControl).put("manual_learning_armed",manual.until>now).put("learning_scope",learningScope).put("sensor_selection",sensorSelectionStatus)
                 .put("observation_only",observe).put("bridge","active").put("event_status",eventStatus).put("events_dropped",dropped)
                 .put("brightness_listener",brightnessListener).put("interaction_guard",interaction.status)
-                .put("proximity_near",near).put("input_lux",lux).put("fusion_policy",luxSource.equals("dual_max_v1")?"brighter_valid_side":"single_source")
+                .put("proximity_near",near).put("input_lux",lux).put("fusion_policy",luxSource.equals("dual_weighted_v1")?"front_weighted_rear_assist":"single_source")
                 .put("last_event_rejection",lastEventRejection).put("lux_source",luxSource).put("fallback_status",fallbackStatus)
                 .put("calibration",calibrationStatus).put("learning_available",referenceLearningAvailable).put("event_capability",eventCapability.status).put("learning_value_source","reference_slider_gamma").put("control_policy","v68").put("learning_model","bounded_curve_offset").put("window_override_detection",hasField(info,"isBrightnessOverrideByWindow")?"framework":("power_dump:"+windowState))
                 .put("learning_lux",lastLearningLux).put("framework_event_lux",lastFrameworkLux)

@@ -41,7 +41,8 @@ struct Frame {
     int64_t now=0;
     bool automatic=false, screen=false, blocked=false, near=false;
     double lux=-1, back=-1, temp=-1, current=0, minimum=0, maximum=1;
-    // FRAME3: raw front used only for orientation checks; lux remains the learning/control coordinate.
+    // The bridge supplies the learning/control coordinate in lux. FRAME3 also
+    // carries raw front so rear-only changes can be confirmed independently.
     double front=-1;
     int battery=-1;
     int local_hour=-1;
@@ -59,6 +60,7 @@ public:
     bool learn(double lux, double value, int64_t timestamp);
     void reset();
     void pauseOutput();
+    void syncOutput(int64_t now, double liveValue);
     bool slider(int value, int64_t wallTime);
     void sliderBaseline(int value);
     double base(double lux) const;
@@ -78,6 +80,7 @@ private:
     bool rear_pending_=false;
     bool reference_paused_=false,reference_handover_=false;
     int64_t last_reference_filter_=-1;
+    int64_t last_reference_output_=-1, reference_ramp_elapsed_=0;
     double reference_curve_target_=-1;
     int last_slider_=-1;
     Frame frame_;

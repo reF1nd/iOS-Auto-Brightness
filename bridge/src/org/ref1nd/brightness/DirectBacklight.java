@@ -20,6 +20,8 @@ public final class DirectBacklight {
     public final long maximum;
     public final DriverOutputGuard learning=new DriverOutputGuard();
     private long last=-1, stableAt=-1, baseline=-1, observed=-1, sampledAt=-1;
+    private long expectedRaw=-1, externalRevision=0, acknowledgedRevision=0, submittedAt=-1, acceptedRaw=-1;
+    private boolean writeChanged=false, recoveryPrepared=false;
     private float sampledFramework=Float.NaN;
     public String status="verifying_mapping";
     public DirectBacklight(File root,String name,File journal,String display,String boot) throws IOException {
@@ -42,12 +44,32 @@ public final class DirectBacklight {
         if(maximum<2||maximum>1000000||!new File(node,"brightness").canWrite())throw new IOException("backlight range or write access unavailable");
     }
     public void referenceMode(){reference=true;}
-    /** Keep the lease through sleep, but never write an off/AOD panel. */
-    public void suspend(){if(!fault)status="reference_screen_off";stableAt=-1;observed=-1;holding=false;learning.reset();}
+    /** Sleep is an explicit handoff; wake must establish a new live baseline. */
+    public void suspend(){
+        synchronized(DirectBacklight.class) {
+            if(!fault)status="reference_screen_off";
+            last=stableAt=baseline=observed=sampledAt=-1;
+            expectedRaw=submittedAt=acceptedRaw=-1;writeChanged=false;acknowledgedRevision=externalRevision;
+            baselineFramework=sampledFramework=Float.NaN;holding=false;learning.reset();
+        }
+    }
     public String path(){return node.getPath();}
     public boolean owned(){return last>=0;}
     /** Last value this writer actually submitted; it is not a driver measurement. */
     public long lastWritten(){return last;}
+    /** Live value accepted by the latest successful write(), including a no-op. */
+    public long lastAcceptedRaw(){return acceptedRaw;}
+    public boolean lastWriteChanged(){return writeChanged;}
+    /** A coherent external change must reach the controller before another write. */
+    public boolean externalChanged(){return externalRevision!=acknowledgedRevision;}
+    public long externalRevision(){return externalRevision;}
+    /** Call only after synchronizing the core to frameBrightness() for this revision. */
+    public boolean acknowledgeExternal(long revision) {
+        synchronized(DirectBacklight.class) {
+            if(fault||holding||observed<0||revision!=externalRevision)return false;
+            acknowledgedRevision=revision;return true;
+        }
+    }
     public boolean locked(){return lease!=null&&lease.active();}
     /** Only an explicit service restart/new writer clears a latched fault. */
     public boolean faulted(){return fault;}
@@ -86,6 +108,11 @@ public final class DirectBacklight {
             if(learning.protection.equals("driver_output_mismatch"))latch("driver_output_mismatch");
             return false;
         }
+        // expectedRaw follows both our own submitted writes and coherent live
+        // changes. An external value returning to an old lastWritten is still
+        // a new observation, not confirmation of a write from several frames ago.
+        if(owned()&&expectedRaw>=0&&sample.after!=expectedRaw)externalRevision++;
+        expectedRaw=sample.after;
         observed=sample.after;holding=false;
         return true;
     }
@@ -97,8 +124,7 @@ public final class DirectBacklight {
         Snapshot sample=snapshot();
         if(!validate(sample,now,framework))return false;
         long raw=sample.after;
-        if(owned()&&raw!=last&&!reference){latch("external_backlight_write");return false;}
-        if(owned()){status="direct_active";return true;}
+        if(owned()){status=externalChanged()?"external_output_sync":"direct_active";return true;}
         long expected=units(framework,maximum);
         // A proven panel scale does not require the OEM's final compensated output
         // to equal its framework target. Unknown adapters still need a live match.
@@ -115,32 +141,44 @@ public final class DirectBacklight {
     private void latch(String reason) throws IOException {
         if(fault)return;
         fault=true;holding=false;status=reason;last=-1;stableAt=-1;baseline=-1;observed=-1;
+        expectedRaw=submittedAt=acceptedRaw=-1;writeChanged=false;acknowledgedRevision=externalRevision;
         // Never restore brightness after a conflict. Permission recovery remains
         // durable if releasing the lease fails, for supervisor/startup cleanup.
         try{releaseAccess();}finally{Files.deleteIfExists(journal.toPath());}
     }
     private void releaseAccess()throws IOException {
         try{if(writer!=null)writer.close();}
-        finally{writer=null;if(lease!=null&&lease.active())lease.release();}
+        finally{writer=null;recoveryPrepared=false;if(lease!=null&&lease.active())lease.release();}
     }
     /** true means accepted (possibly unchanged); false means no write during a hold/fault. */
     public boolean write(float target,float cap) throws IOException {
         synchronized(DirectBacklight.class) {
+        acceptedRaw=-1;writeChanged=false;
         if(fault||holding)return false;
         long raw=units(Math.min(target,cap),maximum);
         // Acquire without a brightness step; following frames use the normal ramp.
         if((verifiedScale||reference)&&!owned()&&baseline>=0)raw=Math.min(baseline,units(cap,maximum));
         if(raw<1)throw new IOException("refusing to blank an active display");
-        // v6.8 compares its cached output, not the live node: unchanged targets
-        // must not chase writes from an already-open system descriptor.
-        if(owned()&&raw==last)return true;
         try {
         long previousObserved=observed;
         Snapshot sample=snapshot();
         if(!validate(sample,sampledAt,sampledFramework))return false;
-        if(sample.after!=previousObserved||(owned()&&!reference&&sample.after!=last)) {
+        if(externalChanged()){status="external_output_sync";return false;}
+        if(sample.after!=previousObserved) {
             holding=true;status="backlight_output_transition";stableAt=-1;
             return false;
+        }
+        // Even an unchanged target must verify ownership first: an external
+        // write between ready() and this call must not be accepted as ours.
+        if(owned()&&raw==last&&sample.after<=units(cap,maximum)){acceptedRaw=sample.after;return true;}
+        if(owned()&&raw>sample.after) {
+            // Last-moment upward insurance mirrors the core's ordinary rise rate.
+            // A stale lower curve target must not become a large physical rise.
+            // Downward output, including a lower system cap, remains immediate.
+            long elapsed=submittedAt<0?50:Math.max(0,Math.min(100,sampledAt-submittedAt));
+            double offset=maximum*.005;
+            long ceiling=Math.max(sample.after+1,(long)Math.floor((sample.after+offset)*Math.pow(1.6,elapsed/1000.0)-offset));
+            raw=Math.min(raw,ceiling);
         }
         if(lease!=null) {
             // app_process can lack DAC override despite uid 0. Retain a handle
@@ -150,18 +188,34 @@ public final class DirectBacklight {
             if(writer==null)writer=new RandomAccessFile(new File(node,"brightness"),"rw");
             lease.acquire();
         }
-        Properties p=new Properties();p.setProperty("node",node.getName());p.setProperty("display",display);
-        p.setProperty("boot",boot);p.setProperty("maximum",Long.toString(maximum));p.setProperty("last",Long.toString(raw));
-        p.setProperty("readback",readback==null?"sysfs":"mi");p.setProperty("systemRaw",Long.toString(baseline));p.setProperty("framework",Float.toString(baselineFramework));
-        if(reference)p.setProperty("policy","reference_no_restore");
-        File tmp=File.createTempFile(".direct-",".tmp",journal.getParentFile());
-        try {
-            try(FileOutputStream out=new FileOutputStream(tmp)){p.store(out,"IAB direct output recovery");out.getFD().sync();}
-            Files.move(tmp.toPath(),journal.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
-        }finally{tmp.delete();}
-        if(writer!=null){writer.seek(0);writer.write((raw+"\n").getBytes(StandardCharsets.US_ASCII));}
+        // Reference recovery never writes a saved brightness, so only the first
+        // acquisition needs a durable output journal. Keep fsync off the ramp;
+        // legacy recovery still records every submitted value as before.
+        if(!reference||!recoveryPrepared) {
+            Properties p=new Properties();p.setProperty("node",node.getName());p.setProperty("display",display);
+            p.setProperty("boot",boot);p.setProperty("maximum",Long.toString(maximum));p.setProperty("last",Long.toString(raw));
+            p.setProperty("readback",readback==null?"sysfs":"mi");p.setProperty("systemRaw",Long.toString(baseline));p.setProperty("framework",Float.toString(baselineFramework));
+            if(reference)p.setProperty("policy","reference_no_restore");
+            File tmp=File.createTempFile(".direct-",".tmp",journal.getParentFile());
+            try {
+                try(FileOutputStream out=new FileOutputStream(tmp)){p.store(out,"IAB direct output recovery");out.getFD().sync();}
+                Files.move(tmp.toPath(),journal.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+                recoveryPrepared=reference;
+            }finally{tmp.delete();}
+        }
+        byte[] encoded=(raw+"\n").getBytes(StandardCharsets.US_ASCII);
+        if(writer!=null)writer.seek(0);
+        // Permission acquisition and durable recovery can take longer than a
+        // display frame. Recheck after that work, immediately before submission.
+        Snapshot finalSample=snapshot();
+        if(!validate(finalSample,sampledAt,sampledFramework))return false;
+        if(externalChanged()){status="external_output_sync";return false;}
+        if(finalSample.after!=sample.after) {
+            holding=true;status="backlight_output_transition";stableAt=-1;return false;
+        }
+        if(writer!=null)writer.write(encoded);
         else writeNode(new File(node,"brightness"),raw);
-        last=raw;status="direct_active";return true;
+        last=expectedRaw=acceptedRaw=raw;writeChanged=true;submittedAt=sampledAt;status="direct_active";return true;
         }catch(IOException|RuntimeException e){if(!fault)latch("backlight_io_failure");throw e;}
         }
     }
@@ -200,6 +254,7 @@ public final class DirectBacklight {
     }
     public void released()throws IOException {
         releaseAccess();last=-1;stableAt=-1;baseline=-1;observed=-1;holding=false;
+        expectedRaw=submittedAt=acceptedRaw=-1;writeChanged=false;acknowledgedRevision=externalRevision;
         if(!fault)status="released";
     }
     /** Framework -> HAL identity must be proven, never assume two normalized ranges match. */

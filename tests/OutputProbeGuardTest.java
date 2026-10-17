@@ -79,6 +79,17 @@ public final class OutputProbeGuardTest {
         next=g.begin(1000);
         check(g.state(6101,true)==FAULT,"main loop may expire while completion is queued");
         check(!g.complete(next,6000,OutputProbeGuard.Result.SAFE),"an earlier worker timestamp cannot undo a fault already observed by the main loop");
+        g=new OutputProbeGuard();
+        first=g.begin(1000);
+        check(g.supersede(1100,1200,OutputProbeGuard.Result.SAFE),"new synchronous interaction read supersedes pending diagnostic");
+        check(!g.complete(first,1300,OutputProbeGuard.Result.UNSAFE),"older async unsafe cannot release a newer safe session");
+        check(g.state(1300,true)==OutputProbeGuard.State.SAFE&&!g.pending(),"new synchronous result supplies current eligibility");
+        check(!g.supersede(1050,1400,OutputProbeGuard.Result.UNSAFE),"older start cannot replace newer evidence even if it finishes later");
+        next=g.begin(2100);
+        check(next!=null&&g.supersede(2200,2300,UNKNOWN),"a new unknown read also supersedes stale safe evidence");
+        check(g.state(2300,true)==WAIT&&!g.complete(next,2400,OutputProbeGuard.Result.SAFE),"unknown cannot be undone by an older safe worker");
+        check(g.state(7301,true)==FAULT,"synchronous unknown does not renew the last credible deadline");
+        check(!g.supersede(7400,7500,OutputProbeGuard.Result.SAFE),"late synchronous success cannot clear a fault");
         System.out.println("Output probe completion time, generations, waits, explicit unsafe and fault latch passed");
     }
 }
