@@ -84,5 +84,26 @@ public final class ProtectionPolicy {
         return Pattern.compile("(?m)^\\s*mBrightnessReason=automatic(?:[ \\t]+\\[[ \\t]*bcbc[ \\t]*\\])?[ \\t]*$").matcher(main).find()
             && Pattern.compile("(?m)^\\s*mTemporaryScreenBrightness[=:]\\s*NaN\\s*$").matcher(main).find();
     }
+    /**
+     * Read-only observation can exercise learning when an emulator reports manual
+     * output despite its automatic setting. This never authorizes a backlight write;
+     * the caller must also require observation mode and live unprotected auto mode.
+     */
+    public static boolean referenceObservationLearningOutput(String dump) {
+        String main=mainController(dump);
+        if(main==null)return false;
+        Matcher reason=Pattern.compile("(?m)^[ \\t]*mBrightnessReason[ \\t]*=[ \\t]*([^\\r\\n]*)$").matcher(main);
+        if(!reason.find())return false;
+        String source=reason.group(1).trim();
+        if(reason.find()||!source.matches("(automatic|manual)(?:[ \\t]+\\[[ \\t]*bcbc[ \\t]*\\])?"))return false;
+        Matcher temporary=Pattern.compile("(?m)^[ \\t]*mTemporaryScreenBrightness[=:][ \\t]*([^\\r\\n]*)$").matcher(main);
+        if(!temporary.find()||!temporary.group(1).trim().equals("NaN")||temporary.find())return false;
+        // Older observation-only adapters may omit this field. A present but
+        // unknown/malformed/limited cap must still reject the learning sample.
+        Matcher cap=Pattern.compile("(?m)^[ \\t]*mCachedBrightnessInfo\\.brightnessMaxReason[^\\r\\n]*$").matcher(main);
+        if(!cap.find())return true;
+        String limit=cap.group();
+        return !cap.find()&&limit.matches("[ \\t]*mCachedBrightnessInfo\\.brightnessMaxReason[ \\t]*=[ \\t]*0[ \\t]*");
+    }
 
 }

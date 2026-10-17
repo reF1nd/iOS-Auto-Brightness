@@ -11,6 +11,7 @@ echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --name 
 test -s "$ANDROID_AVD_HOME/iab.ini"
 emulator -avd iab -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > build/emulator.log 2>&1 &
 cleanup() {
+  timeout 10 adb shell dumpsys display > build/smoke-display.log 2>/dev/null || true
   timeout 10 adb shell cat /data/local/tmp/iab-state/bridge.log > build/smoke-bridge.log 2>/dev/null || true
   tail -60 build/emulator.log || true
   cat build/smoke-bridge.log || true

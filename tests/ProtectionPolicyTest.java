@@ -45,6 +45,17 @@ public final class ProtectionPolicyTest {
         for(String reason:new String[]{"automatic [ dim ]","automatic [ bcbc dim ]","temporary","temporary [ bcbc ]","override","automatic [ thermal ]"})
             check(!ProtectionPolicy.referenceLearningOutput(main.replace("Reason=automatic","Reason="+reason)),"DIM, active slider and protection are not a settled learning baseline");
         check(!ProtectionPolicy.referenceLearningOutput(main.replace(":NaN",":0.1")),"pending temporary slider value must finish before learning");
+        String observationManual=main.replace("Reason=automatic","Reason=manual");
+        String observationOld=observationManual.replace("  mCachedBrightnessInfo.brightnessMaxReason =0\n","");
+        check(ProtectionPolicy.referenceObservationLearningOutput(main)&&ProtectionPolicy.referenceObservationLearningOutput(observationManual),"observation-only learning accepts ordinary automatic or manual emulator output");
+        check(ProtectionPolicy.referenceObservationLearningOutput(observationOld),"observation-only older adapter may omit cap reason");
+        check(ProtectionPolicy.referenceObservationLearningOutput(observationOld.replace("Reason=manual","Reason=manual [ bcbc ]")),"unprotected vendor compensation may be observed");
+        for(String reason:new String[]{"automatic [ dim ]","manual [ dim ]","manual [ bcbc dim ]","manual [ thermal ]","manual [ low_pwr ]","manual [ hdr ]","manual [ future_modifier ]","temporary","override","doze","future_reason"})
+            check(!ProtectionPolicy.referenceObservationLearningOutput(main.replace("Reason=automatic","Reason="+reason)),"observation never learns protected, temporary, dim or unknown output");
+        for(String dump:new String[]{null,"",main+main,observationOld.replace(":NaN",":0.1"),observationOld.replace("  mTemporaryScreenBrightness:NaN\n",""),main.replace("brightnessMaxReason =0","brightnessMaxReason =1"),main.replace("brightnessMaxReason =0","brightnessMaxReason =-1"),main.replace("brightnessMaxReason =0","brightnessMaxReason =unknown"),main.replace("brightnessMaxReason =0","brightnessMaxReason :0"),main+"  mCachedBrightnessInfo.brightnessMaxReason =0\n",main+"  mBrightnessReason=manual\n",main+"  mTemporaryScreenBrightness:NaN\n"})
+            check(!ProtectionPolicy.referenceObservationLearningOutput(dump),"missing temporary evidence, ambiguous fields and present unknown caps are rejected");
+        check(!ProtectionPolicy.referenceOutput(observationManual)&&!ProtectionPolicy.referenceLearningOutput(observationManual),"observation allowance never broadens active manual-output permissions");
+        check(!ProtectionPolicy.referenceOutput(observationOld)&&!ProtectionPolicy.referenceLearningOutput(observationOld),"observation missing-cap allowance never authorizes active control or learning");
         check(SensorChoice.luxSensor(5,"Ambient Light","android.sensor.light"),"standard calibrated lux");
         check(SensorChoice.luxSensor(33171055,"Rear ALS","vendor.sensor.back_lux"),"vendor declared lux");
         check(!SensorChoice.luxSensor(33171111,"Ambient Light Raw Data","vendor.sensor.ambientlight.raw"),"raw channels are not lux");

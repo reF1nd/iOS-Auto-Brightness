@@ -77,7 +77,7 @@ public final class Bridge implements SensorEventListener {
     boolean referenceLearningAvailable=false;
     String outputStatus="backlight_unavailable";
     final OutputProbeGuard outputProbe=new OutputProbeGuard();
-    boolean probeSession=false, outputLearningSafe=false, outputSliderActive=false;
+    boolean probeSession=false, outputLearningSafe=false, observationLearningSafe=false, outputSliderActive=false;
     long referenceAwakeAt=-1, referenceTickAt=-10000;
     volatile String outputFault="";
     final ReferenceSliderSampling sliderSampling=new ReferenceSliderSampling();
@@ -286,11 +286,11 @@ public final class Bridge implements SensorEventListener {
         OutputProbeGuard.Ticket ticket=outputProbe.begin(now);
         if(ticket==null)return;
         new Thread(()->{
-            OutputProbeGuard.Result found=OutputProbeGuard.Result.UNKNOWN;boolean learning=false,slider=false;
-            try{String dump=displayDump();found=ProtectionPolicy.referenceOutputResult(dump);learning=ProtectionPolicy.referenceLearningOutput(dump);slider=InteractionGuard.temporary(dump)==1;}catch(Exception ignored){}
-            final OutputProbeGuard.Result value=found;final boolean learn=learning,drag=slider;
+            OutputProbeGuard.Result found=OutputProbeGuard.Result.UNKNOWN;boolean learning=false,observationLearning=false,slider=false;
+            try{String dump=displayDump();found=ProtectionPolicy.referenceOutputResult(dump);learning=ProtectionPolicy.referenceLearningOutput(dump);observationLearning=ProtectionPolicy.referenceObservationLearningOutput(dump);slider=InteractionGuard.temporary(dump)==1;}catch(Exception ignored){}
+            final OutputProbeGuard.Result value=found;final boolean learn=learning,observeLearn=observationLearning,drag=slider;
             final long completedAt=SystemClock.elapsedRealtime();
-            handler.post(()->{if(closing.get())return;if(outputProbe.complete(ticket,completedAt,value)){outputLearningSafe=learn;outputSliderActive=drag;if(value==OutputProbeGuard.Result.UNSAFE)wake();else wakeAmbient();}});
+            handler.post(()->{if(closing.get())return;if(outputProbe.complete(ticket,completedAt,value)){outputLearningSafe=learn;observationLearningSafe=observeLearn;outputSliderActive=drag;if(value==OutputProbeGuard.Result.UNSAFE)wake();else wakeAmbient();}});
         },"iab-direct-protection").start();
     }
     void latchOutputFault(String reason) throws Exception {
@@ -705,7 +705,7 @@ public final class Bridge implements SensorEventListener {
             boolean on=main!=null&&main.getState()==Display.STATE_ON&&power.isInteractive();
             boolean session=automatic&&on;
             if(session!=probeSession) {
-                outputProbe.invalidate();outputLearningSafe=outputSliderActive=false;probeSession=session;
+                outputProbe.invalidate();outputLearningSafe=observationLearningSafe=outputSliderActive=false;probeSession=session;
                 referenceAwakeAt=session?now:-1;sliderSampling.reset();
                 if(direct!=null)direct.learning.reset();
             }
@@ -776,9 +776,11 @@ public final class Bridge implements SensorEventListener {
                             &&referenceAwakeAt>=0&&now-referenceAwakeAt>=8000&&outputFault.isEmpty();
                         // Driver settling can precede the first temporary probe.
                         // Neither is a reason to consume a user's changed setting.
-                        boolean discard=!sampleSession||probeState==OutputProbeGuard.State.UNSAFE||probeState==OutputProbeGuard.State.FAULT
-                            ||(probeState==OutputProbeGuard.State.SAFE&&!outputLearningSafe&&!outputSliderActive);
-                        boolean wait=!discard&&(probeState!=OutputProbeGuard.State.SAFE||!driverLearningReady(now)||outputSliderActive);
+                        boolean learningProbeSafe=observe?observationLearningSafe:outputLearningSafe;
+                        boolean learningProbeFresh=outputProbe.lastCompletedAt()>=0&&now-outputProbe.lastCompletedAt()<=OutputProbeGuard.FRESH_MS;
+                        boolean discard=!sampleSession||(!observe&&(probeState==OutputProbeGuard.State.UNSAFE||probeState==OutputProbeGuard.State.FAULT))
+                            ||(learningProbeFresh&&(probeState==OutputProbeGuard.State.SAFE||probeState==OutputProbeGuard.State.UNSAFE)&&!learningProbeSafe&&!outputSliderActive);
+                        boolean wait=!discard&&(!learningProbeFresh||!learningProbeSafe||!driverLearningReady(now)||outputSliderActive);
                         ReferenceSliderSampling.Action action=wait?ReferenceSliderSampling.Action.NONE:sliderSampling.observe(now,value,!discard);
                         if(action==ReferenceSliderSampling.Action.BASELINE)result=request("SLIDER_BASELINE "+value);
                         else if(action==ReferenceSliderSampling.Action.SAMPLE) {
