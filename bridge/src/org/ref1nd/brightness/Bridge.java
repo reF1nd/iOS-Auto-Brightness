@@ -618,8 +618,8 @@ public final class Bridge implements SensorEventListener {
             File[] zones=new File("/sys/class/thermal").listFiles();
             if(zones!=null)for(File z:zones)if(z.getName().startsWith("thermal_zone"))try{
                 String type=read(new File(z,"type"),256).trim().toLowerCase(Locale.ROOT);
-                // Skin/battery only; CPU temperatures have different operating limits.
-                if(ThermalPolicy.surface(type))thermalFiles.add(new File(z,"temp"));
+                // Include SoC alongside skin/battery sources, as in v6.8's boost gate.
+                if(ThermalPolicy.boostSource(type))thermalFiles.add(new File(z,"temp"));
             }catch(Exception ignored){}
         }
         temperature=batteryTemperature>=0&&batteryTemperature<=150?batteryTemperature:-1;

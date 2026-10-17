@@ -15,8 +15,9 @@ public final class CompatibilityTest {
         try{PanelProfile.fromDump(dump.replace("mBrightness=[0, 1]","mBrightness=null"),"front");throw new AssertionError("must not borrow rear mapping");}catch(IllegalArgumentException expected){}
         try{PanelProfile.fromDump(dump,"unknown");throw new AssertionError("identity");}catch(IllegalArgumentException expected){}
         check(!PanelProfile.generic("front").calibrated,"generic mapping cannot teach nits");
-        check(ThermalPolicy.surface("battery_therm")&&ThermalPolicy.surface("quiet_therm")&&ThermalPolicy.surface("back_therm"),"surface aliases");
-        check(!ThermalPolicy.surface("soc")&&!ThermalPolicy.surface("cpu_back"),"junction temperature must not use skin limit");
+        check(ThermalPolicy.boostSource("battery_therm")&&ThermalPolicy.boostSource("quiet_therm")&&ThermalPolicy.boostSource("back_therm"),"existing boost temperature aliases");
+        check(ThermalPolicy.boostSource("soc")&&ThermalPolicy.boostSource("SoC_thermal")&&ThermalPolicy.boostSource("soc_cpu"),"reference SoC boost sources including mixed names");
+        check(!ThermalPolicy.boostSource("cpu_back")&&!ThermalPolicy.boostSource("gpu")&&!ThermalPolicy.boostSource("pmic"),"unrelated temperature sources remain excluded");
         check(WindowPolicy.parse("mScreenBrightnessOverrideFromWindowManager=NaN\n")==0,"AOSP no override");
         check(WindowPolicy.parse("mScreenBrightnessOverrideFromWindowManager=0.5\n")==1,"app override");
         check(WindowPolicy.parse("mScreenBrightnessOverrideFromWindowManager={0=NaN, 1=0.8}")==0,"main display only");
