@@ -1,39 +1,42 @@
 # SPDX-License-Identifier: GPL-3.0-only
 cmake_minimum_required(VERSION 3.22)
-project(ios_auto_brightness VERSION 7.0.0 LANGUAGES CXX)
+project(ios_auto_brightness VERSION 8.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
-add_library(brightness_core core/model.cpp core/storage.cpp)
+
+file(STRINGS module/module.prop IAB_VERSION_LINE REGEX "^version=")
+string(REPLACE "version=" "" IAB_VERSION "${IAB_VERSION_LINE}")
+
+# Contraction would change float results relative to the reference binary;
+# fused operations are spelled out with std::fmaf where the reference used fmadd.
+set(IAB_WARNINGS -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
+
+add_library(brightness_core
+  core/config.cpp
+  core/curve.cpp
+  core/dual_sensor.cpp
+  core/engine.cpp
+  core/settings_reader.cpp)
 target_include_directories(brightness_core PUBLIC core)
-target_compile_options(brightness_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
-add_executable(ios_brightness_daemon core/main.cpp)
-target_link_libraries(ios_brightness_daemon PRIVATE brightness_core)
-target_compile_options(ios_brightness_daemon PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_options(brightness_core PRIVATE ${IAB_WARNINGS})
+
+add_executable(ios_brightness_daemon core/daemon.cpp)
+target_link_libraries(ios_brightness_daemon PRIVATE brightness_core ${CMAKE_DL_LIBS})
+target_compile_options(ios_brightness_daemon PRIVATE ${IAB_WARNINGS})
+target_compile_definitions(ios_brightness_daemon PRIVATE IAB_VERSION="${IAB_VERSION}")
 if(ANDROID)
-  target_link_options(ios_brightness_daemon PRIVATE -Wl,-z,max-page-size=16384)
+  target_link_options(ios_brightness_daemon PRIVATE -Wl,-z,max-page-size=16384 -s)
 endif()
+
 if(BUILD_TESTING)
-  add_executable(reference_tests tests/reference_tests.cpp)
-  target_link_libraries(reference_tests PRIVATE brightness_core)
-  target_compile_options(reference_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME reference_policy_contracts COMMAND reference_tests)
-  add_executable(core_tests tests/core_tests.cpp)
-  target_link_libraries(core_tests PRIVATE brightness_core)
-  target_compile_options(core_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME core_contracts COMMAND core_tests)
-  add_executable(feature_tests tests/feature_tests.cpp)
-  target_link_libraries(feature_tests PRIVATE brightness_core)
-  target_compile_options(feature_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME legacy_feature_contracts COMMAND feature_tests)
-  add_executable(ambient_tests tests/ambient_tests.cpp)
-  target_link_libraries(ambient_tests PRIVATE brightness_core)
-  target_compile_options(ambient_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME ambient_guard_contracts COMMAND ambient_tests)
-  add_executable(sunlight_tests tests/sunlight_tests.cpp)
-  target_link_libraries(sunlight_tests PRIVATE brightness_core)
-  target_compile_options(sunlight_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  add_test(NAME sunlight_response_contracts COMMAND sunlight_tests)
-  add_test(NAME daemon_protocol COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/protocol_test.py $<TARGET_FILE:ios_brightness_daemon> ${CMAKE_SOURCE_DIR}/module/profiles/altdb.profile)
+  foreach(name curve_tests engine_tests dual_sensor_tests settings_tests)
+    add_executable(${name} tests/${name}.cpp)
+    target_link_libraries(${name} PRIVATE brightness_core)
+    target_compile_options(${name} PRIVATE ${IAB_WARNINGS})
+    add_test(NAME ${name} COMMAND ${name})
+  endforeach()
+  add_test(NAME daemon_end_to_end
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/daemon_test.py $<TARGET_FILE:ios_brightness_daemon>)
 endif()

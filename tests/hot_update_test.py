@@ -90,7 +90,7 @@ class HotUpdateTest(unittest.TestCase):
         (path / 'module.prop').write_text('id=ios_auto_brightness\n')
         (path / 'skip_mount').touch()
         (path / 'customize.sh').write_text('# installer only\n')
-        for name in ('bridge.jar', 'webroot/index.html', 'SOURCE.txt', 'bin/ios_brightness_daemon'):
+        for name in ('webroot/index.html', 'SOURCE.txt', 'bin/ios_brightness_daemon'):
             (path / name).write_text(version)
         (path / 'bin/ios_brightness_daemon').chmod(0o755)
         (path / 'hot-update.sh').write_text(self.script.read_text())
@@ -251,7 +251,7 @@ esac
         self.assertEqual((self.state / 'learning-0.dat').read_text(), 'preserve learning-0.dat')
 
     def test_service_refuses_first_install_before_reboot(self):
-        # Run the actual service through its guard, before any Android bridge call.
+        # Run the actual service through its guard, before the native core starts.
         path = self.root / 'service.sh'
         path.write_text(Path('module/service.sh').read_text()
                         .replace('/data/adb/ios_auto_brightness', str(self.state))

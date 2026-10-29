@@ -30,16 +30,20 @@ fi
 exec 9>"$STATE/supervisor.lock"
 flock -n 9 || exit 0
 LOG="$STATE/service.log"
-export CLASSPATH="$MODDIR/bridge.jar"
-BRIDGE_PID=
-OWNED=0
+DAEMON="$MODDIR/bin/ios_brightness_daemon"
+CORE_PID=
+# The core restores 0644 itself; this also covers a crashed or killed core.
+release_node() {
+  node=$(cat "$STATE/backlight" 2>/dev/null)
+  case "$node" in /sys/class/backlight/*) [ ! -f "$node/brightness" ] || chmod 0644 "$node/brightness" ;; esac
+}
 cleanup() {
   trap - EXIT HUP INT TERM
-  if [ -n "$BRIDGE_PID" ] && [ -r "/proc/$BRIDGE_PID/cmdline" ]; then
-    cmd=$(tr '\000' ' ' < "/proc/$BRIDGE_PID/cmdline")
-    case "$cmd" in *org.ref1nd.brightness.Bridge*) kill -TERM "$BRIDGE_PID" 2>/dev/null; wait "$BRIDGE_PID" 2>/dev/null ;; esac
+  if [ -n "$CORE_PID" ] && kill -0 "$CORE_PID" 2>/dev/null; then
+    kill -TERM "$CORE_PID" 2>/dev/null
+    wait "$CORE_PID" 2>/dev/null
   fi
-  if [ "$OWNED" = 1 ]; then /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge release >> "$LOG" 2>&1; fi
+  release_node
   rm -f "$STATE/supervisor.pid"
 }
 trap cleanup EXIT
@@ -64,9 +68,7 @@ for id in autobrightness LiveDisplay lux-brightness adaptive-brightness brightne
     exit 1
   fi
 done
-if [ ! -f "$STATE/config.conf" ] && [ ! -f "$STATE/legacy-config.conf" ]; then
-  cp "$MODDIR/default.conf" "$STATE/config.conf"
-fi
+[ -f "$STATE/config.conf" ] || cp "$MODDIR/default.conf" "$STATE/config.conf"
 # stop is session-scoped: a deliberate reboot may restart an enabled module.
 rm -f "$STATE/stop"
 rotate() (
@@ -74,6 +76,7 @@ rotate() (
   flock 8 || return
   max=$(sed -n 's/^log_max_bytes=//p' "$STATE/config.conf" | tail -1)
   backups=$(sed -n 's/^log_max_backups=//p' "$STATE/config.conf" | tail -1)
+  max=${max%%.*} backups=${backups%%.*}
   case "$max" in ''|*[!0-9]*) max=1048576 ;; esac
   case "$backups" in ''|*[!0-9]*) backups=2 ;; esac
   [ "$max" -ge 65536 ] 2>/dev/null && [ "$max" -le 8388608 ] 2>/dev/null || max=1048576
@@ -87,19 +90,18 @@ rotate() (
 )
 failures=0
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] && [ ! -f "$STATE/stop" ]; do
-  /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge "$MODDIR" "$STATE" >> "$LOG" 2>&1 &
-  BRIDGE_PID=$!
-  OWNED=1
+  "$DAEMON" --state "$STATE" >> "$LOG" 2>&1 &
+  CORE_PID=$!
   elapsed=0
-  while kill -0 "$BRIDGE_PID" 2>/dev/null; do
+  while kill -0 "$CORE_PID" 2>/dev/null; do
     [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] && [ ! -f "$STATE/stop" ] || exit 0
     sleep 2
     elapsed=$((elapsed + 2))
     [ $((elapsed % 20)) -ne 0 ] || rotate
   done
-  wait "$BRIDGE_PID" 2>/dev/null
-  BRIDGE_PID=
-  /system/bin/app_process /system/bin org.ref1nd.brightness.Bridge release >> "$LOG" 2>&1
+  wait "$CORE_PID" 2>/dev/null
+  CORE_PID=
+  release_node
   if [ "$elapsed" -ge 60 ]; then failures=0; else failures=$((failures + 1)); fi
   [ "$failures" -lt 5 ] || { echo 'Repeated startup failure; leaving display with system' >> "$LOG"; exit 1; }
   sleep 5

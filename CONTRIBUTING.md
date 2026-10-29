@@ -14,8 +14,8 @@
 - `BUILD_TESTING=ON` 在 Linux 上构建可独立运行的算法、存储及状态机测试，并注册到 CTest；设备接口使用可替换实现。
 - `BUILD_TESTING=OFF` 支持 Android NDK `arm64-v8a`、`armeabi-v7a`、`x86_64`、`x86` 构建。
 - Android 可执行文件目标命名为 `ios_brightness_daemon`，遵循 `CMAKE_RUNTIME_OUTPUT_DIRECTORY`。
-- CI 固定 NDK `27.2.12479018`，使用 API 26 作为原生核心的编译下限，并启用灵活页大小支持；这不代表已支持所有 Android 8.0 及以上系统。Java 桥接使用 SDK 35 编译，安装基线为 Android 12，运行期按接口能力选择校准及降级路径。
-- 模块打包等待核心测试、Android 构建、桥接测试及 Android 12/15 模拟器观察模式检查全部成功，不引入旧版闭源二进制。
+- CI 固定 NDK `27.2.12479018`，使用 API 26 作为原生核心的编译下限，并启用灵活页大小支持；这不代表已支持所有 Android 8.0 及以上系统。安装基线为 Android 12。
+- 模块打包等待核心测试（含真实二进制的模拟 sysfs 端到端测试）与四种 Android 构建全部成功，不引入旧版闭源二进制。
 - ADB 真机调试使用 Actions 产物，单独记录观察模式、主动控制和重启验证结果。
 
 Actions 是自动验证的执行位置。只有对应提交的工作流真实成功后，才能记录为通过；区分工作流检查、核心测试、Android 编译和真机验证。

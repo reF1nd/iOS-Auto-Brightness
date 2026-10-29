@@ -2,13 +2,21 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>iOS Auto Brightness</title><link rel="stylesheet" href="style.css"></head>
 <body><main>
-<header><p id="version">reF1nd · v7</p><h1>iOS Auto Brightness</h1><p>让亮度记住你的偏好</p></header>
+<header><p id="version">reF1nd · v8</p><h1>iOS Auto Brightness</h1><p>v6.8 调光流程的开源重写，配合系统前后光感策略</p></header>
 <div id="notice" role="status">正在连接服务…</div>
-<section><h2>运行状态</h2><div id="status" class="cards"></div><button id="refresh">刷新状态</button><button id="startService">启动服务</button><p id="serviceHint">禁用模块后所有服务退出；重新启用后可点击“启动服务”恢复，无需保留后台监控。首次安装仍需重启。</p><p>背光节点只读监测：请求值与驱动回报分别显示，不代表实测屏幕亮度；多节点不自动推断主副屏。</p><pre id="backlight"></pre></section>
-<section><h2>亮度曲线</h2><p>蓝色：基础曲线 · 橙色：学习曲线 · 紫色：阳光模式。纵轴为面板亮度比例，最终输出受系统上限限制。</p><p id="previewState"></p><p id="curvePoint"></p><svg id="chart" viewBox="0 0 600 220" role="img" aria-label="基础及学习亮度曲线"></svg></section>
-<section><h2>曲线偏好样本</h2><p id="learningState"></p><p>滑块调节记录相对预设曲线的偏好。多个样本共同生成平滑、单调且偏移有界的曲线，不强制穿过每个样本。样本保存后重启仍生效；旧版固定点记录独立保留。温控和系统限亮期间禁止学习。</p><button id="learnArm">学习下一次手动调节（30 秒）</button><div id="points"></div><div class="buttons"><button id="export">导出学习数据</button><label class="button">导入<input id="import" type="file" accept=".dat,text/plain" hidden></label><button id="clear" class="danger">清除当前来源学习</button></div></section>
-<section><h2>调光设置</h2><div id="controls"></div><button id="save">保存并应用</button><button id="defaults">载入默认设置</button><label class="button">导入配置（含 v6）<input id="configImport" type="file" accept=".conf,text/plain" hidden></label><p>夜间修正作用于预设曲线，多条偏好样本共同调整曲线。低电量限亮服从系统上限。Gamma 用于 0～255 滑块偏好的参考换算。</p><details><summary>原始配置</summary><textarea id="config" spellcheck="false" aria-label="原始配置"></textarea><button id="saveRaw">保存原始配置</button></details></section>
-<section><h2>光感选择</h2><p>留空使用自动发现；支持指定完整传感器名称，或具有真实 lux 单位的 sysfs 节点。学习记录按来源隔离。</p><button id="sensorRead">读取选择与传感器列表</button><pre id="sensorList"></pre><textarea id="sensorConfig" spellcheck="false" aria-label="光感选择配置"></textarea><button id="sensorSave">保存光感选择</button></section>
-<section><h2>诊断</h2><button id="diagnose">完整诊断（含离线检查）</button><pre id="diagnostics"></pre><button id="logs">读取最近日志</button><button id="clearLog" class="danger">清空日志及备份</button><label class="log-refresh"><input id="liveLog" type="checkbox"> 自动刷新日志</label><pre id="log"></pre></section>
-<footer><a href="https://github.com/reF1nd/iOS-Auto-Brightness" target="_blank" rel="noopener noreferrer">源码 · GPL-3.0</a><p>Android 12+，按实际显示接口及校准能力适配主屏。系统手动模式下释放控制。</p></footer>
+<section><h2>运行状态</h2><div id="status" class="cards"></div>
+<div class="buttons"><button id="refresh">刷新状态</button><button id="startService">启动服务</button></div>
+<p>在管理器中禁用模块后服务会全部退出；重新启用后点击“启动服务”即可恢复，无需重启。首次安装仍需重启。</p></section>
+<section><h2>亮度曲线</h2><p>蓝线为 v6.8 预设曲线，橙线叠加了学习偏移，红点为当前平滑照度与输出。夜间（18:00–6:00）在此基础上降低 5%。</p>
+<svg id="chart" viewBox="0 0 600 230" role="img" aria-label="亮度曲线"></svg><p id="chartNote"></p></section>
+<section><h2>亮度条学习</h2><p id="learning"></p>
+<p>与 v6.8 相同：拖动亮度条后，把“亮度条换算值与曲线目标之差”按 10% 并入整条曲线的统一偏移，上限 ±30%，重启后保留。只学习真实拖动，系统自动改写亮度条不计入。</p>
+<button id="learnReset" class="danger">清除学习偏移</button></section>
+<section><h2>调光设置</h2><div id="controls"></div>
+<div class="buttons"><button id="save">保存并应用</button><button id="defaults">载入默认设置</button></div>
+<details><summary>原始配置</summary><textarea id="config" spellcheck="false" aria-label="原始配置"></textarea><button id="saveRaw">保存原始配置</button></details></section>
+<section><h2>运行日志</h2><div class="buttons"><button id="logs">读取日志</button><button id="clearLog" class="danger">清空日志</button></div>
+<label class="log-refresh"><input id="liveLog" type="checkbox"> 自动刷新日志</label><pre id="log"></pre></section>
+<section><h2>诊断</h2><button id="diagnose">完整诊断</button><pre id="diagnostics"></pre></section>
+<footer><a href="https://github.com/reF1nd/iOS-Auto-Brightness" target="_blank" rel="noopener noreferrer">源码 · GPL-3.0</a></footer>
 </main><script type="module" src="app.js"></script></body></html>

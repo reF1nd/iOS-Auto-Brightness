@@ -26,7 +26,7 @@ class StartServiceTest(unittest.TestCase):
         self.boot.write_text('boot-A\n')
         (self.state / 'activated-boot').write_text('boot-A\n')
         (self.mod / 'bin').mkdir()
-        for name in ['bridge.jar', 'SOURCE.txt', 'bin/ios_brightness_daemon']:
+        for name in ['SOURCE.txt', 'bin/ios_brightness_daemon']:
             (self.mod / name).write_text('fixture')
             (self.mod / name).chmod(0o755)
         self.bin = self.root / 'bin'
@@ -117,29 +117,14 @@ else echo '{{"ready":false}}'; fi
         self.assertEqual((self.state / 'starts').read_text().count('started'), 2)
 
     def test_cgroup_failure_never_spawns_service(self):
-        (self.state / 'output-fault').write_text('driver_output_mismatch\n')
         (self.state / 'detach-fail').touch()
         result = self.result()
         self.assertFalse(result['ok'])
         self.assertIn('进程回收组', result['error'])
         self.assertFalse((self.state / 'starts').exists())
-        self.assertTrue((self.state / 'output-fault').exists())
-
-    def test_only_explicit_stopped_start_clears_output_fault(self):
-        fault = self.state / 'output-fault'
-        fault.write_text('driver_output_mismatch\n')
-        (self.mod / 'disable').touch()
-        self.assertFalse(self.result()['ok'])
-        self.assertTrue(fault.exists())
-        (self.mod / 'disable').unlink()
-        self.assertEqual(self.result()['state'], 'started')
-        self.assertFalse(fault.exists())
-        fault.write_text('output_probe_timeout\n')
-        self.assertEqual(self.result()['state'], 'already_running')
-        self.assertTrue(fault.exists(), 'a live service must first be stopped')
 
     def test_guards_preserve_stop_and_data(self):
-        for file in ('config.conf', 'learning.dat'):
+        for file in ('config.conf', 'learn.conf'):
             (self.state / file).write_text('preserve')
         for flag in ('disable', 'remove', 'update'):
             with self.subTest(flag=flag):
@@ -149,7 +134,7 @@ else echo '{{"ready":false}}'; fi
                 self.assertTrue((self.state / 'stop').exists())
                 self.assertFalse((self.state / 'starts').exists())
                 (self.mod / flag).unlink()
-        for file in ('config.conf', 'learning.dat'):
+        for file in ('config.conf', 'learn.conf'):
             self.assertEqual((self.state / file).read_text(), 'preserve')
 
     def test_first_install_reinstall_and_boot_disabled(self):

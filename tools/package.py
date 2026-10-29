@@ -14,9 +14,7 @@ out = root / 'dist'
 out.mkdir(exist_ok=True)
 sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 revision = subprocess.check_output(['git', 'show', '-s', '--format=%ct'], text=True).strip()
-artifacts = {
-    'bridge.jar': root / 'build/artifacts/bridge/bridge.jar',
-}
+artifacts = {}
 for abi, elf_class, machine in [('arm64-v8a',2,183),('armeabi-v7a',1,40),('x86_64',2,62),('x86',1,3)]:
     path=root / f'build/artifacts/core/ios-auto-brightness-android-{abi}/ios_brightness_daemon'
     elf=path.read_bytes()
@@ -26,9 +24,6 @@ for abi, elf_class, machine in [('arm64-v8a',2,183),('armeabi-v7a',1,40),('x86_6
 for name,path in artifacts.items():
     if not path.is_file() or not path.stat().st_size:
         raise SystemExit(f'Missing build artifact: {name}')
-with zipfile.ZipFile(artifacts['bridge.jar']) as jar:
-    if 'classes.dex' not in jar.namelist():
-        raise SystemExit('Bridge has no DEX bytecode')
 files = {str(p.relative_to(root / 'module')): p.read_bytes()
          for p in (root / 'module').rglob('*') if p.is_file()}
 files.update({name: p.read_bytes() for name, p in artifacts.items()})
@@ -50,7 +45,8 @@ with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslev
 with zipfile.ZipFile(archive) as z:
     assert z.testzip() is None
     for name in ['module.prop','customize.sh','service.sh','hot-update.sh','start-service.sh','process-group.sh','uninstall.sh','skip_mount',
-                 'webroot/index.html','bin/arm64-v8a/ios_brightness_daemon','bridge.jar','LICENSE','SOURCE.txt']:
+                 'control.sh','check_status.sh','default.conf','webroot/index.html','webroot/app.js',
+                 'bin/arm64-v8a/ios_brightness_daemon','LICENSE','SOURCE.txt']:
         assert name in z.namelist(), name
     assert not any('..' in Path(name).parts or name.startswith('/') for name in z.namelist())
 (out / (archive.name + '.sha256')).write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')

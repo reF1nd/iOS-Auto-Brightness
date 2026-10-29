@@ -55,7 +55,7 @@ hot_classify() {
   # A pending first install MUST remain first-install until the boot ID changes,
   # even if a manager has already populated the active directory.
   if [ "$(cat "$HOT_STATE/first-install-boot" 2>/dev/null)" = "$hot_boot" ]; then return 2; fi
-  if [ -f "$HOT_ACTIVE/bridge.jar" ] && [ -x "$HOT_ACTIVE/bin/ios_brightness_daemon" ] &&
+  if [ -f "$HOT_ACTIVE/control.sh" ] && [ -x "$HOT_ACTIVE/bin/ios_brightness_daemon" ] &&
      { [ -f "$HOT_STATE/activated-boot" ] || [ -f "$HOT_STATE/first-install-boot" ] || hot_health; }; then
     return 0
   fi
@@ -81,7 +81,7 @@ hot_preflight() {
       [ ! -e "$hot_tree/$hot_hook" ] || return 1
     done
   done
-  for hot_file in bridge.jar bin/ios_brightness_daemon service.sh control.sh hot-update.sh process-group.sh webroot/index.html SOURCE.txt; do
+  for hot_file in bin/ios_brightness_daemon service.sh control.sh hot-update.sh process-group.sh webroot/index.html SOURCE.txt; do
     [ -s "$HOT_STAGED/$hot_file" ] || return 1
   done
   hot_flags && return 1
@@ -96,8 +96,8 @@ hot_lock_service() {
   done
 }
 hot_stop() {
-  # The socket asks the bridge to run its shutdown hook. The supervisor also
-  # observes stop. Locks prove BOTH supervisor cleanup and native exit completed.
+  # control.sh stop signals the core; the supervisor also observes stop.
+  # Locks prove BOTH supervisor cleanup and core exit (node released) completed.
   touch "$HOT_STATE/stop" || return 1
   timeout 8 sh "$HOT_ACTIVE/control.sh" stop || :
   exec 9>"$HOT_STATE/supervisor.lock"
