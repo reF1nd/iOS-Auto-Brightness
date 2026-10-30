@@ -193,6 +193,17 @@ void learn_file_round_trip() {
   broken.replace(broken.find("anchor=0 "), 9, "anchor=99 ");
   CHECK(!old.parse(broken));
   CHECK_EQ(old.user_anchors(), 0);
+
+  // The Zygisk reporter writes Java's Float.toString.
+  NitController reported;
+  CHECK(reported.parse("version=2\ndefaults=0.0 2.0 30.0 135.0 0.0 600.0 220.0 5000.0 1060.0\norder=2\n"
+                       "user=0.0 8.783608\ngood_curve=0\nanchor=0.0 8.783608 2 1\nanchor=30.0 135.0 0 0\n"
+                       "anchor=600.0 220.0 0 0\nanchor=5000.0 1060.0 0 0\n"));
+  NitController dragged;
+  dragged.drag(0.0f, 8.78360844f);
+  CHECK(reported.same(dragged));
+  dragged.drag(100.0f, 170.0f);
+  CHECK(!reported.same(dragged));
 }
 
 void adopts_the_framework_state() {

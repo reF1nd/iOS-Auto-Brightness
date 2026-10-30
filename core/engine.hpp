@@ -33,7 +33,9 @@ class Platform {
   virtual void poll_sensors(std::vector<SensorEvent>& events) = 0;
   virtual bool ndk_sensors() = 0;
   virtual bool back_sensor() = 0;
-  // 1: bl_power reads '0' or cannot be opened; 0 otherwise.
+  // 1: the main display is lit (the Zygisk reporter's display state when
+  // connected, which tells the AOD apart; otherwise bl_power reads '0' or
+  // cannot be opened); 0 otherwise.
   virtual int power_state() = 0;
   virtual int read_level() = 0;
   virtual void write_level(int level) = 0;
@@ -50,6 +52,15 @@ class Platform {
   virtual int64_t elapsed_ms() = 0;
   virtual void save_learning(const std::string& text) = 0;
   virtual void log(const std::string& line) = 0;
+  // While the Zygisk reporter is connected, the framework's anchors arrive
+  // live: once per change, in learn.conf form.
+  virtual bool follows_system() { return false; }
+  virtual bool system_anchors(std::string& text) {
+    (void)text;
+    return false;
+  }
+  // Asks the framework to drop its anchors too (resetDefaultSpline).
+  virtual void reset_system_anchors() {}
 };
 
 struct EngineStatus {
@@ -81,6 +92,8 @@ class Engine {
   // Panel level of the curve at this lux, before the night and battery limits.
   int curve_level(float lux) const { return curve_.level(curve_.nits(lux), max_); }
   void reset_learning();
+  // The reported display state changed: check it on the next tick.
+  void recheck_power() { last_power_check_ = INT64_MIN / 2; }
   void shutdown();
 
   int poll_ms() const { return poll_ms_; }
@@ -103,6 +116,7 @@ class Engine {
   int apply_limits(int level, int64_t now);
   void wake(int64_t now);
   void check_good_curve(float lux);
+  void follow_system();
   void log(const char* format, ...) __attribute__((format(printf, 2, 3)));
 
   Platform& platform_;

@@ -22,7 +22,7 @@ KernelSU、APatch、Magisk 自动亮度模块。调光流程按闭源 v6.8 守�
 
 - **设置读取**：v6.8 按文本 XML 截取 `settings_system.xml` 的前 8 KB，Android 12 起该文件默认为 ABX 二进制格式，读取失败时它会一直当作自动模式、亮度条学习永不触发。本模块完整解析 ABX 与文本 XML。
 - **亮度曲线**：v6.8 用自己的 lux → nits 公式和固定 52 点面板表。本模块改用系统的曲线：HyperOS 的 `RefactorNitController` 锚点给出亮度条位置（逻辑尼特），`getCurrentNit` 按环境光换算成实际尼特，屏幕亮度表换算到节点值。参数启动时从本机的 `framework-ext-res` 和 overlay 读取。没有这套策略的系统跟随 `BrightnessConfiguration` 默认曲线。
-- **亮度条学习**：v6.8 把拖动按 10% 并入整条曲线的统一偏移，暗处几乎学不到。本模块按 HyperOS 的规则做 3 点学习：取系统记录的拖动（`mUserLux`/`mUserLogicalNit`），系统自动改写亮度条不计入；暗光、室内、户外三段各保留最近一次拖动，带动所在段两端的锚点并保持单调；拖得比系统建议更亮时，息屏较久后回落。重启后保留：装有 Zygisk 时，开机后把学习结果写回系统，系统也按学习后的曲线调光（见[兼容性](docs/COMPATIBILITY.md)）。
+- **亮度条学习**：v6.8 把拖动按 10% 并入整条曲线的统一偏移，暗处几乎学不到。本模块按 HyperOS 的规则做 3 点学习：取系统记录的拖动（`mUserLux`/`mUserLogicalNit`），系统自动改写亮度条不计入；暗光、室内、户外三段各保留最近一次拖动，带动所在段两端的锚点并保持单调；拖得比系统建议更亮时，息屏较久后回落。重启后保留：装有 Zygisk 时，开机后把学习结果写回系统，系统也按学习后的曲线调光；之后系统把拖动、good curve 回落和息屏显示（AOD）状态实时报给模块（见[兼容性](docs/COMPATIBILITY.md)）。
 - **后置光感**：v6.8 只在前置无读数时使用后置。本模块按 HyperOS `DualSensorPolicy` 的规则：后置的 1 秒、3 秒均值都超过前置的增亮阈值并通过防抖后改用后置照度，前置不低于后置时交还前置；后置只会让屏幕变亮，副屏点亮且前置很暗时忽略后置。可在设置中关闭，恢复 v6.8 行为。
 - **启动修正**：v6.8 启动时若曲线目标恰好落在当前亮度的回差内，会把屏幕写到最低亮度再回升，本模块沿用当前亮度。
 
@@ -37,9 +37,8 @@ Android 12（API 31）及以上，包含 ARM64、ARMv7、x86_64 和 x86 核心�
 ## 安装与更新
 
 1. 下载模块 ZIP，可用同名 `.sha256` 核对。开发构建可从成功的 Actions 运行下载 `kernelsu-module` artifact。
-2. 用 Root 管理器安装。KernelSU 3.2.5 及以上使用原生热安装：首次安装和更新都立即生效，安装后不显示重启按钮；新服务起不来时安装界面会提示，不自动回滚。
-3. 其他管理器（APatch、Magisk、旧版 KernelSU）：首次安装需要重启，首次安装后尚未重启时再次安装也仍需重启。已运行的模块支持热更新：停止旧服务、替换文件、启动并核对新服务，安装器退出后清除本模块的待重启标记，WebUI 立即可用；失败会回滚，但管理器仍会显示重启按钮。
-4. 开启系统自动亮度，在 Root 管理器的 WebUI 入口查看状态、曲线与参数。
+2. 用 Root 管理器安装，然后重启。首次安装和更新都在重启后生效，重启前旧版本照常运行。Zygisk 部分只在 system_server 启动时加载，所以不提供热更新。
+3. 开启系统自动亮度，在 Root 管理器的 WebUI 入口查看状态、曲线与参数。
 
 禁用模块后服务全部退出，重新启用后在 WebUI 点击“启动服务”恢复。安装 v6.8 后再安装本模块会按首次安装处理，并迁移其配置；v6.8 的学习偏移不再使用。
 
@@ -49,7 +48,7 @@ Android 12（API 31）及以上，包含 ARM64、ARMv7、x86_64 和 x86 核心�
 
 ## 构建与发布
 
-编译、测试、静态检查和打包由 [GitHub Actions](https://github.com/reF1nd/iOS-Auto-Brightness/actions) 执行：核心单元测试、真实二进制在模拟 sysfs 上的端到端测试、ASan/UBSan、四种 ABI 构建、安装与热更新事务测试和 WebUI 测试。Release 工作流复用完整 CI 并校验版本与源码提交。维护者操作见 [贡献约定](CONTRIBUTING.md)。
+编译、测试、静态检查和打包由 [GitHub Actions](https://github.com/reF1nd/iOS-Auto-Brightness/actions) 执行：核心单元测试、真实二进制在模拟 sysfs 上的端到端测试、ASan/UBSan、四种 ABI 构建、安装与启动脚本测试、system_server 锚点恢复测试和 WebUI 测试。Release 工作流复用完整 CI 并校验版本与源码提交。维护者操作见 [贡献约定](CONTRIBUTING.md)。
 
 ## 项目来源与许可证
 

@@ -24,7 +24,7 @@ guard() {
   first=$(cat "$STATE/first-install-boot" 2>/dev/null)
   [ "$first" != "$boot_id" ] || fail '首次安装尚未重启，请先重启手机'
   [ -s "$STATE/activated-boot" ] || [ -n "$first" ] || fail '尚无模块激活记录，请先重启手机'
-  [ ! -e "$MODDIR/update" ] || fail '模块有待完成的更新，请等待安装完成或重启'
+  [ ! -e "$MODDIR/update" ] || fail '模块有待完成的更新，请重启手机'
   for file in service.sh control.sh process-group.sh SOURCE.txt; do
     [ -s "$MODDIR/$file" ] || fail '模块文件不完整，请重新安装'
   done
@@ -40,7 +40,7 @@ for path in "$STATE" "$STATE/update.lock" "$STATE/supervisor.lock" "$STATE/core.
   [ ! -L "$path" ] || fail '运行目录或锁文件异常，拒绝启动'
 done
 [ -d "$STATE" ] || fail '模块尚未完成安装，请重新安装并重启'
-# Serialize manual launches with the installer, including the readiness wait.
+# Serialize manual launches, including the readiness wait.
 exec 8>"$STATE/update.lock"
 flock -n 8 || fail '安装更新或另一启动操作正在进行，请稍后重试'
 guard

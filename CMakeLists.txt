@@ -21,7 +21,8 @@ add_library(brightness_core
   core/engine.cpp
   core/nit_controller.cpp
   core/settings_reader.cpp
-  core/system_curve.cpp)
+  core/system_curve.cpp
+  core/system_link.cpp)
 target_include_directories(brightness_core PUBLIC core)
 target_compile_options(brightness_core PRIVATE ${IAB_WARNINGS})
 
@@ -42,7 +43,8 @@ if(ANDROID)
 endif()
 
 if(BUILD_TESTING)
-  foreach(name engine_tests dual_sensor_tests nit_controller_tests brightness_map_tests android_resources_tests settings_tests)
+  foreach(name engine_tests dual_sensor_tests nit_controller_tests brightness_map_tests android_resources_tests settings_tests
+               system_link_tests)
     add_executable(${name} tests/${name}.cpp)
     target_link_libraries(${name} PRIVATE brightness_core)
     target_compile_options(${name} PRIVATE ${IAB_WARNINGS})

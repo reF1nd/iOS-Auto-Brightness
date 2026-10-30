@@ -16,7 +16,8 @@ v8 起放弃 v7 的 Java 桥接与自研调光算法，改为按闭源 v6.8 守�
 - `core/dual_sensor.*`：HyperOS `DualSensorPolicy` 的照度选择。
 - `core/settings_reader.*`：ABX 与文本 XML 设置读取。
 - `core/daemon.cpp`：NDK 光感、背光、电量、温度、信号与状态输出。
-- `module/`：监督进程、控制脚本、热更新事务、WebUI。
+- `module/`：监督进程、控制脚本、WebUI。
+- `zygisk/`：开机时把锚点写回 system_server 的 Zygisk 库和 dex。
 
 ## 待办
 

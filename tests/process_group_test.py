@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
-BUSYBOX = os.environ.get('HOT_TEST_BUSYBOX')
+BUSYBOX = os.environ.get('IAB_TEST_BUSYBOX')
 SHELL = [BUSYBOX, 'sh'] if BUSYBOX else ['bash']
 
 

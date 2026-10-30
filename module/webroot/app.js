@@ -126,7 +126,8 @@ async function refresh(loadConfig = false, announce = false) {
       card('平滑照度', lux(s.smoothed_lux)), card('目标 / 输出', `${s.target} / ${s.current}`),
       card('处理间隔', `${s.poll_ms} ms`), card('阳光模式', s.sunlight ? '开启' : '关闭'),
       card('电量', `${s.battery}%${s.charging ? ' · 充电中' : ''}`), card('亮度条', String(s.slider)),
-      card('亮度曲线', s.learnable ? 'HyperOS 逻辑尼特曲线' : '系统默认曲线（不学习）'));
+      card('亮度曲线', s.learnable ? 'HyperOS 逻辑尼特曲线' : '系统默认曲线（不学习）'),
+      card('系统联动', s.system_link === 'zygisk' ? 'Zygisk 实时上报' : 'dumpsys 轮询'));
     const last = {none: '尚未触发', learned: '已记住一次拖动', disabled: '学习已关闭', reset: '已清除',
       unsupported: '本机曲线不支持学习', good_curve: '息屏后已回落到系统建议亮度'}[s.last_learning] ?? s.last_learning;
     const anchors = (s.anchors ?? []).filter(([, , user]) => user).map(([at, logical, , level]) => `${at.toFixed(1)} lux → 亮度条 ${logical.toFixed(1)} 逻辑尼特（节点 ${level}）`);

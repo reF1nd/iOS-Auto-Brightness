@@ -7,9 +7,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The anchors saved in learn.conf, and writing them into a HyperOS
- * RefactorNitController (miui-services.jar) by its field names. Plain Java so
- * the host tests can run it against a stand-in controller.
+ * The anchors saved in learn.conf, and writing them into or reading them out
+ * of a HyperOS RefactorNitController (miui-services.jar) by its field names.
+ * Plain Java so the host tests can run it against a stand-in controller.
  */
 final class AnchorState {
   static final class Anchor {
@@ -145,6 +145,25 @@ final class AnchorState {
     return null;
   }
 
+  /**
+   * The controller's anchors in the learn.conf form NitController::parse
+   * reads. Float.toString round-trips each float exactly. Call it on the
+   * display handler, which is the thread that changes them.
+   */
+  static String snapshot(Object controller) throws ReflectiveOperationException {
+    float[] defaults = (float[]) field(controller, "mDefaultLogicalCurve").get(controller);
+    boolean good = field(controller, "mIsHaveGoodCurve").getBoolean(controller);
+    StringBuilder text = new StringBuilder("version=2\ndefaults=");
+    for (int i = 0; i < defaults.length; ++i) text.append(i > 0 ? " " : "").append(defaults[i]);
+    text.append("\norder=").append(field(controller, "mOrderCounter").getInt(controller))
+        .append("\nuser=").append(field(controller, "mUserLux").getFloat(controller))
+        .append(' ').append(field(controller, "mUserLogicalNit").getFloat(controller))
+        .append("\ngood_curve=").append(good ? 1 : 0).append('\n');
+    new Target(controller, "mAnchor").append(text, "anchor");
+    if (good) new Target(controller, "mGoodAnchor").append(text, "good");
+    return text.toString();
+  }
+
   /** One set of anchor arrays: mAnchor* or mGoodAnchor*. */
   private static final class Target {
     final Object controller;
@@ -177,6 +196,14 @@ final class AnchorState {
         user[i] = anchor != null && anchor.user;
       }
       count.setInt(controller, anchors.size());
+    }
+
+    void append(StringBuilder text, String key) throws IllegalAccessException {
+      int used = Math.min(count.getInt(controller), capacity());
+      for (int i = 0; i < used; ++i) {
+        text.append(key).append('=').append(lux[i]).append(' ').append(nit[i]).append(' ').append(order[i])
+            .append(' ').append(user[i] ? 1 : 0).append('\n');
+      }
     }
   }
 

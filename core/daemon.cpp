@@ -3,8 +3,10 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -24,6 +26,7 @@
 #include "engine.hpp"
 #include "settings_reader.hpp"
 #include "system_curve.hpp"
+#include "system_link.hpp"
 
 #ifndef IAB_VERSION
 #define IAB_VERSION "dev"
@@ -301,8 +304,8 @@ void log_line(const char* text) {
 
 class AndroidPlatform final : public iab::Platform {
  public:
-  AndroidPlatform(const std::string& backlight, Sensors& sensors)
-      : backlight_(backlight), sensors_(sensors) {}
+  AndroidPlatform(const std::string& backlight, Sensors& sensors, iab::SystemLink& link)
+      : backlight_(backlight), sensors_(sensors), link_(link) {}
 
   void discover_fallback() {
     const std::string als = trimmed(run_command("getprop persist.sys.display.als_name 2>/dev/null"));
@@ -352,6 +355,11 @@ class AndroidPlatform final : public iab::Platform {
   bool ndk_sensors() override { return sensors_.ndk(); }
   bool back_sensor() override { return sensors_.back(); }
   int power_state() override {
+    // bl_power reads '0' in the AOD too; the reporter knows DOZE apart from ON.
+    if (link_.connected() && link_.display_state() != iab::SystemLink::kUnknown) {
+      const int state = link_.display_state();
+      return state == kDisplayOn || state == kDisplayVr || state == kDisplayOnSuspend ? 1 : 0;
+    }
     const int fd = open(backlight_file("bl_power").c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) return 1;
     char buffer[8] = {};
@@ -439,6 +447,12 @@ class AndroidPlatform final : public iab::Platform {
     return on;
   }
   bool user_drag(float& lux, float& logical) override {
+    // The reporter sends mUserLux/mUserLogicalNit with every anchor change.
+    if (link_.connected()) {
+      float user_lux = 0.0f, user_logical = 0.0f;
+      return !link_.anchors().empty() && changed(link_point(link_.anchors(), user_lux, user_logical), user_lux,
+                                                 user_logical, lux, logical);
+    }
     // dumpsys display is large: query it when the settings file changed (a
     // drag persists the slider) and otherwise every 8 s.
     const int64_t now = monotonic_ms();
@@ -457,13 +471,15 @@ class AndroidPlatform final : public iab::Platform {
     settings_stamp_ = stamp;
     user_checked_ = now;
     float user_lux = 0.0f, user_logical = 0.0f;
-    const std::string point = user_point(user_lux, user_logical);
-    if (point.empty()) return false;
-    const bool changed = point != last_user_point_ && user_lux >= 0.0f && user_logical >= 0.0f;
-    last_user_point_ = point;
-    if (changed) lux = user_lux, logical = user_logical;
-    return changed;
+    return changed(user_point(user_lux, user_logical), user_lux, user_logical, lux, logical);
   }
+  bool follows_system() override { return link_.connected() && !link_.anchors().empty(); }
+  bool system_anchors(std::string& text) override {
+    if (!follows_system() || link_.anchors() == seen_anchors_) return false;
+    text = seen_anchors_ = link_.anchors();
+    return true;
+  }
+  void reset_system_anchors() override { link_.send_reset(); }
   int64_t elapsed_ms() override { return boottime_ms(); }
   void save_learning(const std::string& text) override {
     const std::string path = g_state_dir + "/learn.conf", temporary = path + ".tmp";
@@ -482,15 +498,36 @@ class AndroidPlatform final : public iab::Platform {
     user_checked_ = monotonic_ms();
   }
   const std::string& settings_status() const { return settings_status_; }
+  const char* link_status() const { return link_.connected() ? "zygisk" : "dumpsys"; }
   std::string backlight_file(const char* name) const { return backlight_ + "/" + name; }
 
  private:
+  // Display.STATE_* values the reporter sends.
+  static constexpr int kDisplayOn = 2, kDisplayVr = 5, kDisplayOnSuspend = 6;
+
   // mUserLux/mUserLogicalNit of RefactorNitController change only when a
   // drag reaches updateLogicalCurve, never on automatic slider rewrites.
   static std::string user_point(float& lux, float& logical);
+  static std::string link_point(const std::string& anchors, float& lux, float& logical);
+  static std::string point_text(float lux, float logical) {
+    if (!std::isfinite(lux) || !std::isfinite(logical)) return "";
+    char point[64];
+    std::snprintf(point, sizeof point, "%.7g %.7g", lux, logical);
+    return point;
+  }
+  // Both sources format the point alike, so switching between them is no drag.
+  bool changed(const std::string& point, float user_lux, float user_logical, float& lux, float& logical) {
+    if (point.empty()) return false;
+    const bool moved = point != last_user_point_ && user_lux >= 0.0f && user_logical >= 0.0f;
+    last_user_point_ = point;
+    if (moved) lux = user_lux, logical = user_logical;
+    return moved;
+  }
 
   std::string backlight_;
   Sensors& sensors_;
+  iab::SystemLink& link_;
+  std::string seen_anchors_;
   std::string fallback_path_, fallback_command_;
   int64_t dumpsys_checked_ = -15000;
   float dumpsys_lux_ = -1.0f;
@@ -509,11 +546,30 @@ std::string AndroidPlatform::user_point(float& lux, float& logical) {
   if (block.empty()) return "";
   lux = dump_value(block, "mUserLux=");
   logical = dump_value(block, "mUserLogicalNit=");
-  if (!std::isfinite(lux) || !std::isfinite(logical)) return "";
-  char point[64];
-  std::snprintf(point, sizeof point, "%.7g %.7g", lux, logical);
-  return point;
+  return point_text(lux, logical);
 }
+
+std::string AndroidPlatform::link_point(const std::string& anchors, float& lux, float& logical) {
+  const size_t at = anchors.find("\nuser=");
+  if (at == std::string::npos || std::sscanf(anchors.c_str() + at + 6, "%f %f", &lux, &logical) != 2) return "";
+  return point_text(lux, logical);
+}
+
+// Only system_server may report: uid 1000 and its process name.
+bool system_server_peer(int fd) {
+#ifdef SO_PEERCRED
+  ucred peer{};
+  socklen_t size = sizeof peer;
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != 1000) return false;
+  std::string name;
+  if (!read_text("/proc/" + std::to_string(peer.pid) + "/cmdline", name, 64)) return false;
+  return std::strcmp(name.c_str(), "system_server") == 0;
+#else
+  (void)fd;
+  return false;
+#endif
+}
+
 
 std::string find_backlight() {
   const std::string preferred = device_path("/sys/class/backlight/panel0-backlight");
@@ -729,7 +785,7 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
       "\"curve\":[%s],\"default_curve\":[%s],\"dual_sensor\":%s,"
       "\"sunlight\":%s,\"fast_dark\":%s,\"stable_count\":%d,\"bright_count\":%d,\"dark_count\":%d,"
       "\"sunlight_count\":%d,\"battery\":%d,\"charging\":%s,\"settings\":\"%s\",\"backlight\":\"%s\","
-      "\"local_hour\":%d}\n",
+      "\"system_link\":\"%s\",\"local_hour\":%d}\n",
       IAB_VERSION, static_cast<int>(getpid()), static_cast<long long>(now),
       static_cast<long long>(now - started), s.automatic ? "auto" : "manual", s.mode_setting,
       s.screen_on ? "true" : "false", s.proximity_near ? "true" : "false", s.front_lux, s.back_lux,
@@ -741,7 +797,7 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
       current.c_str(), defaults.c_str(), config.dual_sensor ? "true" : "false", s.sunlight ? "true" : "false",
       s.fast_dark ? "true" : "false", s.stable_count, s.bright_count, s.dark_count, s.sunlight_count,
       s.battery, s.charging ? "true" : "false", platform.settings_status().c_str(),
-      json_escape(backlight).c_str(), local_hour_now());
+      json_escape(backlight).c_str(), platform.link_status(), local_hour_now());
   if (length <= 0 || static_cast<size_t>(length) >= sizeof buffer) return;
   const std::string path = g_state_dir + "/status.json", temporary = path + ".tmp";
   FILE* file = std::fopen(temporary.c_str(), "w" IAB_CLOEXEC);
@@ -810,16 +866,29 @@ void sleep_ms(int64_t milliseconds) {
   nanosleep(&duration, nullptr);
 }
 
-bool same_anchors(const iab::NitController& a, const iab::NitController& b) {
-  const std::vector<iab::Anchor>& x = a.anchors();
-  const std::vector<iab::Anchor>& y = b.anchors();
-  if (x.size() != y.size()) return false;
-  for (size_t i = 0; i < x.size(); ++i) {
-    if (std::fabs(x[i].lux - y[i].lux) > 1e-3f || std::fabs(x[i].nit - y[i].nit) > 1e-3f || x[i].user != y[i].user) {
-      return false;
-    }
+// Sleeps until the timeout or a report arrives.
+void wait_for(const iab::SystemLink& link, int64_t ms) {
+  std::vector<pollfd> fds;
+  for (const int fd : link.fds()) fds.push_back({fd, POLLIN, 0});
+  if (fds.empty()) {
+    sleep_ms(ms);
+    return;
   }
-  return true;
+  poll(fds.data(), static_cast<nfds_t>(fds.size()), static_cast<int>(ms));
+}
+
+void log_link(unsigned events, const iab::SystemLink& link, int& rejected) {
+  if (events & iab::SystemLink::kConnected) log_line("System link: Zygisk reporter connected");
+  if (events & iab::SystemLink::kLost) log_line("System link: reporter gone; back to dumpsys and bl_power");
+  if ((events & iab::SystemLink::kRejected) && rejected < 5) {
+    ++rejected;
+    log_line("System link: refused a peer that is not system_server or speaks another protocol");
+  }
+  if ((events & iab::SystemLink::kState) && link.connected()) {
+    char text[64];
+    std::snprintf(text, sizeof text, "System link: display state %d", link.display_state());
+    log_line(text);
+  }
 }
 
 int run(const std::string& state) {
@@ -858,7 +927,9 @@ int run(const std::string& state) {
 
   Sensors sensors;
   sensors.open(log_line);
-  AndroidPlatform platform(backlight, sensors);
+  iab::SystemLink link(system_server_peer);
+  if (!link.listen("iab_brightness")) log_line("System link: cannot listen; using dumpsys and bl_power");
+  AndroidPlatform platform(backlight, sensors, link);
   if (!sensors.ndk()) platform.discover_fallback();
   platform.prime_user_point();
   const std::string dump = run_command("dumpsys display 2>/dev/null");
@@ -897,7 +968,7 @@ int run(const std::string& state) {
     // into it at boot; report whether the two agree.
     if (curve.learnable() && curve.controller().user_anchors() > 0) {
       iab::NitController system(curve.controller().config());
-      const bool same = system.adopt(refactor_section(dump)) && same_anchors(system, curve.controller());
+      const bool same = system.adopt(refactor_section(dump)) && system.same(curve.controller());
       log_line(same ? "Learn: the system holds the same anchors"
                     : "Learn: the system holds other anchors and writes its own curve in between "
                       "(Zygisk restore not active)");
@@ -940,6 +1011,7 @@ int run(const std::string& state) {
   write_status(engine, platform, config, backlight, curve_source, started, started);
 
   int64_t last_tick = started, config_checked = started;
+  int rejected = 0;
   while (g_run) {
     const int64_t now = monotonic_ms();
     if (g_reload || now - config_checked >= 5000) {
@@ -968,7 +1040,14 @@ int run(const std::string& state) {
       write_status(engine, platform, config, backlight, curve_source, started, monotonic_ms());
     }
     const int64_t remaining = engine.poll_ms() - (monotonic_ms() - last_tick);
-    if (remaining > 0 && g_run && !g_dump_status) sleep_ms(std::min<int64_t>(remaining, 1000));
+    if (remaining > 0 && g_run && !g_dump_status) wait_for(link, std::min<int64_t>(remaining, 1000));
+    const unsigned events = link.service();
+    log_link(events, link, rejected);
+    if (events & (iab::SystemLink::kState | iab::SystemLink::kConnected | iab::SystemLink::kLost)) {
+      // Screen on, off or AOD: act on it now rather than at the next poll.
+      engine.recheck_power();
+      last_tick = monotonic_ms() - engine.poll_ms();
+    }
   }
   engine.shutdown();
   sensors.close();

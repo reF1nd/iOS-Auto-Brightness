@@ -97,6 +97,13 @@ public final class AnchorStateTest {
         "last drag");
     check(!(boolean) get(controller, "mIsHaveGoodCurve"), "no good curve");
     check(AnchorState.userAnchors(controller) == 1, "one drag held");
+    // What the reporter sends: learn.conf again, every float exact.
+    String snapshot = AnchorState.snapshot(controller);
+    check(snapshot.startsWith("version=2\ndefaults=0.0 2.0 30.0 135.0 0.0 600.0 220.0 5000.0 1060.0\norder=2\n"
+        + "user=0.0 8.783608\ngood_curve=0\nanchor=0.0 8.783608 2 1\nanchor=30.0 135.0 0 0\n"), "snapshot format");
+    AnchorState again = AnchorState.parse(snapshot);
+    check(again != null && again.anchors.size() == 4 && again.order == 2 && again.userLogical == 8.78360844f
+        && again.anchors.get(0).nit == 8.78360844f && !again.good, "snapshot round-trips");
 
     AnchorState good = AnchorState.parse(GOOD);
     Controller second = new Controller();
@@ -104,6 +111,9 @@ public final class AnchorStateTest {
     float[] goodNit = (float[]) get(second, "mGoodAnchorNit");
     check((boolean) get(second, "mIsHaveGoodCurve") && goodNit[2] == 421.134f
         && (int) get(second, "mGoodAnchorCount") == 5 && (int) get(second, "mAnchorCount") == 5, "good anchors");
+    String goodSnapshot = AnchorState.snapshot(second);
+    check(goodSnapshot.contains("good_curve=1\n") && goodSnapshot.contains("\ngood=500.0 421.134 1 1\n")
+        && goodSnapshot.endsWith("good=5000.0 1060.0 0 0\n"), "snapshot carries the good curve");
 
     // Another ROM's default curve: nothing is touched.
     Controller other = new Controller();

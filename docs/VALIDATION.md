@@ -26,8 +26,10 @@
 - `dual_sensor_tests`：环形缓冲加权、裁剪、防抖、阈值曲线，以及后置接管、短暂闪光、副屏光线、前置被遮挡等场景。
 - `settings_tests`：ABX 编码夹具（字符串池、整数、空值、布尔）、截断文件、文本 XML、配置覆盖规则。
 - `daemon_end_to_end`：真实二进制在模拟 sysfs 与设置文件上运行，检查 0444/0644 切换、照度变化后的写入、状态输出、单实例锁、学习重置、手动模式放权与退出恢复。
-- 安装、启动、cgroup 脱离、热更新事务、日志工具与 WebUI 测试沿用并适配 v7 的用例。
-- `AnchorStateTest`（Java）：解析设备上的 `learn.conf`，写入与 `RefactorNitController` 同名字段的替身（字段在父类上也能找到），检查拖动锚点、清空的空位、good curve、计数器；默认曲线不同、锚点超过 `MAX_ANCHORS` 时不做任何改动；拒绝其他版本、乱序和损坏的文件。CI 另检查 Zygisk 库只导出两个入口。
+- 安装、启动、cgroup 脱离、日志工具与 WebUI 测试沿用并适配 v7 的用例；首次安装后、重启前 `service.sh` 不启动服务。
+- `system_link_tests`：按上报方的格式经 socketpair 喂数据，检查状态与锚点只在变化时报告、拆分到达的消息、未知类型跳过；版本不符、握手前发数据、格式错误和超长消息会断开；`reset` 命令；对方关闭后回到未连接；抽象 socket 的身份检查、占用和新连接替换旧连接（仅 Linux）。
+- `engine_tests` 另含：上报连接时不自己做 good curve，而是跟随系统的回落和重置；同样的锚点不重复保存；随锚点到达的拖动只学习一次；其他默认曲线和关闭学习时不跟随；清除学习时请求系统重置。`nit_controller_tests` 检查能读 Java `Float.toString` 写出的快照。
+- `AnchorStateTest`（Java）：解析设备上的 `learn.conf`，写入与 `RefactorNitController` 同名字段的替身（字段在父类上也能找到），检查拖动锚点、清空的空位、good curve、计数器，以及上报用的快照格式与往返；默认曲线不同、锚点超过 `MAX_ANCHORS` 时不做任何改动；拒绝其他版本、乱序和损坏的文件。CI 另检查 Zygisk 库只导出两个入口。
 
 ### 真机
 
@@ -35,7 +37,13 @@
 
 - 不安装模块，直接运行本地 NDK 构建 30 秒：前置、后置、接近传感器经 NDK 就绪；ABX 设置读取正常（模式 1，亮度条 23）；15.3 lux 时写入曲线目标 1633；稳定后刷新间隔升到 8000 ms；`SIGTERM` 后进程退出，节点恢复 0644。
 - 设备调研结论见 [DEVICE.md](DEVICE.md)。
-- 完整模块安装、热更新与长时间观感对比尚待进行。
+- 长时间观感对比尚待进行。
+
+2026-10-30，beta.2（提交 23ff481）安装后重启：
+
+- 暗处拖动后重启，纯黑环境下亮度正确恢复（用户确认）。
+- 启动日志为 `Learn: 1 dragged anchors restored` 和 `Learn: the system holds the same anchors`；`dumpsys display` 中主屏锚点为 `[(0.0,8.783608,user), (30.0,135.0,def), (600.0,220.0,def), (5000.0,1060.0,def)]`。
+- `zygisk.starts` 记录本次开机第 9 秒启动一次 system_server，计数 1，没有 `zygisk.disabled`；恢复完成后 system_server 中没有本模块的库映射，也没有残留线程。
 
 ## v7（已停用）
 

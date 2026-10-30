@@ -5,6 +5,7 @@
 ## 背光
 
 - 主屏 `panel0-backlight`，`max_brightness` 16383；副屏 `panel1-backlight`，最大 4095，熄灭时 `bl_power` 为 4。
+- 息屏显示（AOD，`doze_always_on=1`）时主屏 `bl_power` 仍为 0、节点为系统的 AOD 亮度（实测 81、103），`card0-DSI-1/dpms` 为 `On`，只有高通的 `sde-conn-2-DSI-1/panel_power_state` 为 2（LP2，亮屏 0、关闭 5）。`debug.tracing.screen_state` 在 AOD 时为 4，但两块屏的 `DisplayPowerController.setScreenState` 都会写它，背屏的状态会盖掉主屏，不能单独依赖。
 - 把主屏节点设为 0444 后，系统自动亮度仍会持续改写背光（实测 75 秒内从 188 变到 6352 再回到 116），显示 HAL 持有已打开的写句柄，文件权限挡不住。v6.8 的 0444 锁定因此不是独占：系统与模块各自在自己的目标变化时写入。
 
 ## 设置

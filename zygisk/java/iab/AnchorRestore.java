@@ -11,7 +11,8 @@ import android.util.SparseArray;
  * would write its default curve while the daemon still follows the learned
  * one. Once the controller of the main display exists, this writes the
  * anchors kept in learn.conf back into it on the display handler thread.
- * Nothing here may throw into system_server.
+ * After boot the same thread reports the display state and the anchors to
+ * the daemon (Reporter). Nothing here may throw into system_server.
  */
 public final class AnchorRestore {
   private static final String TAG = "iOS_Bright";
@@ -27,15 +28,12 @@ public final class AnchorRestore {
     this.state = state;
   }
 
-  /** Called from the Zygisk library on the system_server main thread. */
+  /** Called from the Zygisk library on the system_server main thread; learn is empty without learn.conf. */
   public static void start(String learn) {
     try {
-      final AnchorState state = AnchorState.parse(learn);
-      if (state == null) {
-        Log.w(TAG, "System anchors: learn.conf is not usable");
-        return;
-      }
-      if (state.userAnchors() == 0) return;
+      AnchorState parsed = learn.isEmpty() ? null : AnchorState.parse(learn);
+      if (!learn.isEmpty() && parsed == null) Log.w(TAG, "System anchors: learn.conf is not usable");
+      final AnchorState state = parsed != null && parsed.userAnchors() > 0 ? parsed : null;
       Thread thread = new Thread(new Runnable() {
         @Override
         public void run() {
@@ -60,16 +58,17 @@ public final class AnchorRestore {
         Thread.sleep(STEP_MS);
         handler = find();
       }
-      post(handler, false);
+      if (state != null) post(handler, false);
       // Loading the brightness configuration during boot may reset the
       // anchors again; restore once more if nothing was dragged since.
       for (long waited = 0; !"1".equals(property("sys.boot_completed")); waited += 2000) {
         if (waited >= BOOT_MS) return;
         Thread.sleep(2000);
       }
-      post(handler, true);
+      if (state != null) post(handler, true);
+      new Reporter(handler, controller, displayController).run();
     } catch (Throwable t) {
-      Log.w(TAG, "System anchors: not restored", t);
+      Log.w(TAG, "System anchors: stopped", t);
     }
   }
 

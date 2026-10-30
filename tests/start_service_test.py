@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 
-BUSYBOX = os.environ.get('HOT_TEST_BUSYBOX')
+BUSYBOX = os.environ.get('IAB_TEST_BUSYBOX')
 SHELL = [BUSYBOX, 'sh'] if BUSYBOX else ['bash']
 
 
@@ -144,6 +144,22 @@ else echo '{{"ready":false}}'; fi
         self.assertFalse(self.result()['ok'])
         self.boot.write_text('boot-B\n')
         self.assertTrue(self.result()['ok'])
+
+    def test_service_refuses_first_install_before_reboot(self):
+        # The real boot script stops at its guard, before the native core starts.
+        real = self.root / 'real'
+        real.mkdir()
+        (real / 'process-group.sh').write_text('iab_detach_cgroups() { :; }\n')
+        (real / 'service.sh').write_text(Path('module/service.sh').read_text()
+                                         .replace('/data/adb/ios_auto_brightness', str(self.state))
+                                         .replace('/proc/sys/kernel/random/boot_id', str(self.boot)))
+        (self.state / 'activated-boot').unlink()
+        (self.state / 'first-install-boot').write_text('boot-A\n')
+        result = subprocess.run(['bash', '-c', 'export IAB_SHELL_READY=$$; exec bash "$1"', 'fixture', str(real / 'service.sh')],
+                                env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.state / 'activated-boot').exists())
+        self.assertIn('awaiting reboot', (self.state / 'service.log').read_text())
 
     def test_unknown_install_and_conflict(self):
         (self.state / 'activated-boot').unlink()

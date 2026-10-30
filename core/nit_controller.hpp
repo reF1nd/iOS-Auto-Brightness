@@ -44,6 +44,8 @@ class NitController {
   const std::vector<Anchor>& good_anchors() const { return good_; }
   bool has_good_curve() const { return has_good_; }
   int user_anchors() const;
+  // Same anchors (within 1e-3), drag flags and good curve state.
+  bool same(const NitController& other) const;
   float user_lux() const { return user_lux_; }
   float user_logical() const { return user_logical_; }
 

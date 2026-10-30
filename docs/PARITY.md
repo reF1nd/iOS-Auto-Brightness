@@ -15,7 +15,7 @@ v6.8 的曲线（`ios_curve` 0x5dd4：分 7 段把 lux 换算成 nits；`nits_tb
 | 设置 | `cached_auto` < 0 或距上次满 8 秒时读取 `screen_brightness_mode` 与 `screen_brightness`（≤255） | `refresh_settings`；文件读取见“差异” |
 | 模式切换 | 自动：节点 0444、启用光感、800 ms；手动：0644、停用光感、5000 ms；两者都清除阳光状态并标记首轮 | 同 |
 | 光感 | 自动模式下 `ALooper_pollOnce(0)` 后逐个取事件：类型 5 为前置，33171055 为后置，8 为接近（读数 0 视为遮挡） | `Sensors::poll` / `apply_events` |
-| 亮灭屏 | 每 2 秒读 `bl_power`，首字符为 `0`（或无法打开）视为亮屏；亮屏瞬间直接写入当前曲线目标，不渐变 | `tick` / `wake` |
+| 亮灭屏 | 每 2 秒读 `bl_power`，首字符为 `0`（或无法打开）视为亮屏；亮屏瞬间直接写入当前曲线目标，不渐变 | `tick` / `wake`。息屏显示（AOD）时 `bl_power` 仍为 `0`，v6.8 会把它当成亮屏、光线一变就把正常亮度写进 AOD。Zygisk 上报连接时改用主屏的 `Display.STATE_*`：DOZE、DOZE_SUSPEND 按熄屏处理，状态一变立刻检查；没有上报时保持 v6.8 行为 |
 | 熄屏 | 停用光感，15000 ms 一轮；亮屏后的下一轮仍隔 15 秒 | 同 |
 | 接近遮挡 | 自动模式下不处理，8000 ms 一轮 | 同 |
 | 手动模式 | 只记录节点当前值，5000 ms 一轮 | 同 |
@@ -48,7 +48,7 @@ v6.8 的曲线（`ios_curve` 0x5dd4：分 7 段把 lux 换算成 nits；`nits_tb
 | 学习保存 | 偏移写文件，重启保留 | 锚点写 `learn.conf`，重启保留；没有可用记录时启动接管系统当前的锚点（`dumpsys` 的 `anchors=`） | 系统重启后会清空锚点；保留是用户最初的要求。装有 Zygisk 时开机把 `learn.conf` 写回系统，否则系统重启后按默认曲线写入 |
 | 后置光感 | 仅前置为负时使用 | `dual_sensor.cpp` 按 HyperOS `DualSensorPolicy` 选择照度，`dual_sensor=0` 恢复 v6.8 行为 | 按用户要求参考系统原生的前后光感逻辑 |
 | 启动回差 | 尚无上次目标（0）时，与当前亮度比较落入回差就把目标换成 0，写入最低亮度后再回升 | 沿用当前亮度 | 明显缺陷，只出现在启动后的第一轮 |
-| 路径 | `/data/local/tmp/ios_brightness*` | `/data/adb/ios_auto_brightness/`，安装时迁移 v6.8 的配置与偏移 | 私有目录、热更新与 WebUI |
+| 路径 | `/data/local/tmp/ios_brightness*` | `/data/adb/ios_auto_brightness/`，安装时迁移 v6.8 的配置与偏移 | 私有目录与 WebUI |
 | 背光节点 | 固定 `panel0-backlight` | 优先 `panel0-backlight`，否则第一个有效背光设备 | 兼容其他设备 |
 
 ## 系统亮度曲线与学习

@@ -180,6 +180,8 @@ void Engine::wake(int64_t now) {
 // more than 20 lux, a drag above the good curve falls back to it.
 void Engine::check_good_curve(float lux) {
   reset_check_ = false;
+  // The framework applies it itself, and the reporter brings the result.
+  if (platform_.follows_system()) return;
   const int64_t off = platform_.elapsed_ms() - closed_at_;
   if (!curve_.learnable() || !curve_.controller().config().reset_policy) return;
   if (!(off >= kResetAfterMs || (std::fabs(lux - closed_lux_) > kResetLuxChange && off >= kResetLightChangeAfterMs))) {
@@ -227,6 +229,7 @@ void Engine::check_learning(int64_t now) {
     learn_level_ = platform_.read_level();
     return;
   }
+  follow_system();
   if (!learn_pending_) return;
   const int level = platform_.read_level();
   if (level != learn_level_ && now - learn_since_ < 10000) {
@@ -240,6 +243,24 @@ void Engine::check_learning(int64_t now) {
     current_ = level;
     transition_ = {level, level, now, 0};
   }
+}
+
+// The framework's anchors as reported: drags come through user_drag above;
+// this catches what changes them otherwise (its good curve, a reset), so the
+// system and the daemon keep writing the same curve.
+void Engine::follow_system() {
+  std::string text;
+  if (!platform_.system_anchors(text) || !config_.learning_enabled || !curve_.learnable()) return;
+  NitController& ours = curve_.controller();
+  NitController system(ours.config());
+  if (!system.parse(text) || system.same(ours)) return;
+  const bool reset = system.user_anchors() == 0;
+  const bool good = !reset && ours.has_good_curve() && !system.has_good_curve();
+  ours = system;
+  platform_.save_learning(ours.serialize());
+  last_learning_ = reset ? "reset" : good ? "good_curve" : "learned";
+  log("Learn: following the system's anchors (%s, %d dragged)", reset ? "reset" : good ? "good curve" : "changed",
+      ours.user_anchors());
 }
 
 void Engine::tick(int64_t now) {
@@ -517,6 +538,7 @@ void Engine::tick(int64_t now) {
 }
 
 void Engine::reset_learning() {
+  platform_.reset_system_anchors();
   curve_.controller().reset();
   learn_pending_ = false;
   platform_.save_learning(curve_.controller().serialize());

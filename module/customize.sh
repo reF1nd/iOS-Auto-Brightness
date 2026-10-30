@@ -16,7 +16,7 @@ mkdir -p "$STATE"
 chmod 700 "$STATE"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/bin/ios_brightness_daemon" 0 0 0755
-for f in service.sh control.sh check_status.sh uninstall.sh hot-update.sh hotinstall.sh start-service.sh; do set_perm "$MODPATH/$f" 0 0 0755; done
+for f in service.sh control.sh check_status.sh uninstall.sh start-service.sh; do set_perm "$MODPATH/$f" 0 0 0755; done
 # Keep reference keys from the existing or a v6.8 configuration, dropping keys
 # of earlier rewrites; every kept value passes the core's own validation.
 KEYS='alpha_fast|alpha_mid|alpha_slow|fast_threshold|slow_threshold|spike_up|spike_down|hyst_low|hyst_high|manual_gamma|high_lux_threshold|high_lux_boost_max|high_lux_min_pct|high_lux_duration_ms|learning_enabled|dual_sensor|log_max_bytes|log_max_backups'
@@ -50,28 +50,17 @@ fi
 chmod 600 "$STATE"/*.conf 2>/dev/null
 # A new install re-enables the Zygisk anchor restore after its crash guard tripped.
 rm -f "$STATE/zygisk.disabled" "$STATE/zygisk.starts"
-# Record first installation even if the hot-update helper cannot run. An active
-# directory alone is not evidence of activation: managers may create it early.
+# Earlier versions updated in place; their transaction backups and status are no longer used.
+[ -L "$STATE/updates" ] || rm -rf "$STATE/updates"
+rm -f "$STATE/hot-update.log" "$STATE/update-status"
+# Record first installation so nothing starts the service before the reboot. An
+# active directory alone is not evidence of activation: managers may create it early.
 ACTIVE=/data/adb/modules/ios_auto_brightness
 BOOT_ID=$(cat /proc/sys/kernel/random/boot_id) || abort 'Cannot identify this boot.'
 [ -n "$BOOT_ID" ] || abort 'Cannot identify this boot.'
 if [ ! -f "$ACTIVE/control.sh" ] || [ ! -x "$ACTIVE/bin/ios_brightness_daemon" ]; then
   printf '%s\n' "$BOOT_ID" > "$STATE/first-install-boot" || abort 'Cannot record first installation.'
 fi
-if [ "$KSU_HAS_HOT_INSTALL" = true ]; then
-  # KernelSU replaces the module directory itself after this script and runs
-  # hotinstall.sh, which hands the service over; no reboot is offered. If it
-  # falls back to a staged install, the module activates on the next boot.
-  export MODULE_HOT_INSTALL_REQUEST=true MODULE_HOT_RUN_SCRIPT=hotinstall.sh
-  ui_print 'KernelSU hot install requested; the new version starts when installation finishes.'
-else
-  sh "$MODPATH/hot-update.sh" prepare "$MODPATH" "$$" "$PPID" "$ZIPFILE" "$BOOTMODE"
-  hot_result=$?
-  case "$hot_result" in
-    0) ui_print 'Hot update started successfully; WebUI becomes available after the installer exits.' ;;
-    2) ui_print 'Installation staged. Reboot required to activate this module.' ;;
-    *) abort 'Hot update failed. Inspect /data/adb/ios_auto_brightness/hot-update.log and updates/ backups.' ;;
-  esac
-fi
+ui_print 'Reboot to activate this version; the running one is left as it is until then.'
 ui_print 'Existing learning offset and configuration are preserved.'
-ui_print 'With Zygisk (Zygisk Next, ReZygisk, NeoZygisk or Magisk), the system keeps the learned curve after a reboot; this part takes effect from the next boot.'
+ui_print 'With Zygisk (Zygisk Next, ReZygisk, NeoZygisk or Magisk), the system keeps the learned curve after a reboot.'

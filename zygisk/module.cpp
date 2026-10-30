@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Zygisk part of the module. HyperOS forgets its brightness anchors on reboot;
 // this hands learn.conf and anchors.dex to system_server, where
-// iab.AnchorRestore writes the anchors back into RefactorNitController. Apps
-// unload the library at once. The companion runs as root: it reads the files
+// iab.AnchorRestore writes the anchors back into RefactorNitController and
+// then reports the display state and anchors to the daemon. Apps unload the
+// library at once. The companion runs as root: it reads the files
 // system_server may not, and stops handing them over when system_server keeps
 // restarting, in case the restore is what crashes it.
 #include <android/log.h>
@@ -116,11 +117,14 @@ bool allowed_this_start() {
   return false;
 }
 
+// Sends learn.conf (empty when missing; the reporter runs either way) and the dex.
 void companion(int fd) {
   std::string learn, dex;
-  const bool ready = allowed_this_start() && read_file(std::string(kState) + "/learn.conf", learn, kMaxLearn) &&
-                     learn.compare(0, 10, "version=2\n") == 0 && read_file(kDex, dex, kMaxDex);
-  if (!ready) learn.clear(), dex.clear();
+  if (!allowed_this_start() || !read_file(kDex, dex, kMaxDex)) dex.clear();
+  if (dex.empty() || !read_file(std::string(kState) + "/learn.conf", learn, kMaxLearn) ||
+      learn.compare(0, 10, "version=2\n") != 0) {
+    learn.clear();
+  }
   if (send_blob(fd, learn)) send_blob(fd, dex);
 }
 
@@ -200,7 +204,7 @@ class Module : public zygisk::ModuleBase {
   }
 
   void postServerSpecialize(const zygisk::ServerSpecializeArgs*) override {
-    if (!learn_.empty() && !dex_.empty()) load(env_, learn_, dex_);
+    if (!dex_.empty()) load(env_, learn_, dex_);
     std::string().swap(learn_);
     std::string().swap(dex_);
   }

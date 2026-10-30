@@ -14,12 +14,13 @@
 - **重启后保留学习**：HyperOS 只在内存里保存锚点，重启后回到默认曲线；系统在模块两次写入之间写的是它自己的值，所以只靠 `learn.conf` 时，重启后看起来"没记住"。装有 Zygisk（Zygisk Next、ReZygisk、NeoZygisk 或 Magisk 自带）时，模块的 Zygisk 部分会在 system_server 启动后，把 `learn.conf` 写回主屏的 `RefactorNitController`，两边从开机起就一致。
   - 只改写锚点相关的字段（`mAnchor*`、`mGoodAnchor*`、`mOrderCounter`、`mIsHaveGoodCurve`、`mUserLux`、`mUserLogicalNit`），之后的学习和 good curve 仍由系统完成，不挂钩任何方法。字段名取自 HyperOS 的 `miui-services.jar`；找不到字段、系统默认曲线和 `learn.conf` 不一致时什么也不改，并在 logcat（标签 `iOS_Bright`）里说明原因。
   - 启动日志会写明系统和模块的锚点是否一致（`Learn: the system holds ...`）。
+  - 开机完成后，同一线程改为上报：连接守护进程监听的抽象 socket `iab_brightness`，主屏显示状态或锚点一变就发送（每 0.5 秒检查一次，锚点在显示 handler 线程上读取）。守护进程据此识别拖动、跟随系统的 good curve 回落和重置，不再每 8 秒执行 `dumpsys display`；WebUI 清除学习时也让系统一起重置。守护进程只接受 uid 1000、进程名为 `system_server` 的连接，上报方也只连 root 的监听端。没有连接时回到 `dumpsys` 和 `bl_power`，WebUI 的“系统联动”显示当前方式。
   - system_server 在 2 分钟内连续第三次启动时（例如开机循环），Zygisk 部分停止工作并留下 `zygisk.disabled`，重新安装模块后恢复。
-  - 这部分在 system_server 启动时加载，热安装后要到下次开机才更新；APatch、没有 Zygisk 的 KernelSU 不支持。
+  - 这部分在 system_server 启动时加载，所以模块的安装和更新都要重启才生效；APatch、没有 Zygisk 的 KernelSU 不支持。
 - **同系统的其他机型**：
   - 曲线参数、overlay 和屏幕亮度表都按本机读取，正常情况下与该机系统的默认曲线一致，可对照启动日志的 `Curve check`（与系统表相差超过 5% 时会注明）。
   - 后置光感阈值、HBM 门限仍是小米 17 Pro Max 的值；没有后置光感的机型只用前置。
   - 阳光模式的温度门槛沿用 v6.8：只看前 20 个温度区。本机匹配的温度区是第 79、90 个，所以门槛实际不起作用，其他机型取决于温度区的编号。
   - 背光节点的位数和低亮度驱动映射因屏而异，见上方节点换算。
 - **双光感**：阈值曲线取自小米 17 Pro Max 的系统配置；其他设备没有后置光感时自动只用前置。
-- **熄屏判断**：读背光设备的 `bl_power`，无法打开时视为亮屏（v6.8 行为）。
+- **熄屏判断**：Zygisk 上报连接时用主屏的显示状态，息屏显示（AOD）按熄屏处理；否则读背光设备的 `bl_power`，无法打开时视为亮屏（v6.8 行为，AOD 会被当成亮屏）。

@@ -195,6 +195,19 @@ int NitController::user_anchors() const {
   return static_cast<int>(std::count_if(anchors_.begin(), anchors_.end(), [](const Anchor& a) { return a.user; }));
 }
 
+bool NitController::same(const NitController& other) const {
+  const auto equal = [](const std::vector<Anchor>& a, const std::vector<Anchor>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::fabs(a[i].lux - b[i].lux) > 1e-3f || std::fabs(a[i].nit - b[i].nit) > 1e-3f || a[i].user != b[i].user) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return has_good_ == other.has_good_ && equal(anchors_, other.anchors_) && (!has_good_ || equal(good_, other.good_));
+}
+
 std::string NitController::serialize() const {
   std::string text = "version=2\ndefaults=";
   char item[96];
