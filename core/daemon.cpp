@@ -810,6 +810,18 @@ void sleep_ms(int64_t milliseconds) {
   nanosleep(&duration, nullptr);
 }
 
+bool same_anchors(const iab::NitController& a, const iab::NitController& b) {
+  const std::vector<iab::Anchor>& x = a.anchors();
+  const std::vector<iab::Anchor>& y = b.anchors();
+  if (x.size() != y.size()) return false;
+  for (size_t i = 0; i < x.size(); ++i) {
+    if (std::fabs(x[i].lux - y[i].lux) > 1e-3f || std::fabs(x[i].nit - y[i].nit) > 1e-3f || x[i].user != y[i].user) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int run(const std::string& state) {
   g_state_dir = state;
   const std::string config_path = state + "/config.conf";
@@ -879,6 +891,20 @@ int run(const std::string& state) {
                     curve.controller().user_anchors());
       log_line(text);
       platform.save_learning(curve.controller().serialize());
+    }
+    // The framework forgets its anchors on reboot and then writes its default
+    // curve in between our writes. The Zygisk library puts learn.conf back
+    // into it at boot; report whether the two agree.
+    if (curve.learnable() && curve.controller().user_anchors() > 0) {
+      iab::NitController system(curve.controller().config());
+      const bool same = system.adopt(refactor_section(dump)) && same_anchors(system, curve.controller());
+      log_line(same ? "Learn: the system holds the same anchors"
+                    : "Learn: the system holds other anchors and writes its own curve in between "
+                      "(Zygisk restore not active)");
+    }
+    if (access((state + "/zygisk.disabled").c_str(), F_OK) == 0) {
+      log_line("Zygisk: anchor restore stopped after system_server restarted repeatedly; install the module "
+               "again to re-enable it");
     }
   }
   Engine engine(platform, config, max_level, curve);

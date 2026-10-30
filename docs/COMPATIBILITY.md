@@ -11,6 +11,11 @@
   - 两者都没有时使用小米 17 Pro Max 的逻辑尼特曲线。
   - 屏幕亮度表（尼特 ↔ 亮度值）从 `dumpsys display` 读取，读不到时用同一设备的配置。节点值按“亮度值 × `max_brightness`”换算；在本机暗处，这比系统经驱动写出的值低约 8%（系统写 `brightness_clone` 143 时节点为 154），别的屏幕驱动可能差得更多。
 - **学习**：依赖 `dumpsys display` 中主屏（`mDisplayId=0`）`Refactor Nit Controller Configuration` 段的 `mUserLux`/`mUserLogicalNit`。没有该段（未开启上述策略的 HyperOS、非小米系统）时不学习。学习记录与 ROM 的默认锚点绑定：系统更新改了默认锚点后，旧记录会被丢弃并从默认开始。副屏和折叠屏的外屏不参与。
+- **重启后保留学习**：HyperOS 只在内存里保存锚点，重启后回到默认曲线；系统在模块两次写入之间写的是它自己的值，所以只靠 `learn.conf` 时，重启后看起来"没记住"。装有 Zygisk（Zygisk Next、ReZygisk、NeoZygisk 或 Magisk 自带）时，模块的 Zygisk 部分会在 system_server 启动后，把 `learn.conf` 写回主屏的 `RefactorNitController`，两边从开机起就一致。
+  - 只改写锚点相关的字段（`mAnchor*`、`mGoodAnchor*`、`mOrderCounter`、`mIsHaveGoodCurve`、`mUserLux`、`mUserLogicalNit`），之后的学习和 good curve 仍由系统完成，不挂钩任何方法。字段名取自 HyperOS 的 `miui-services.jar`；找不到字段、系统默认曲线和 `learn.conf` 不一致时什么也不改，并在 logcat（标签 `iOS_Bright`）里说明原因。
+  - 启动日志会写明系统和模块的锚点是否一致（`Learn: the system holds ...`）。
+  - system_server 在 2 分钟内连续第三次启动时（例如开机循环），Zygisk 部分停止工作并留下 `zygisk.disabled`，重新安装模块后恢复。
+  - 这部分在 system_server 启动时加载，热安装后要到下次开机才更新；APatch、没有 Zygisk 的 KernelSU 不支持。
 - **同系统的其他机型**：
   - 曲线参数、overlay 和屏幕亮度表都按本机读取，正常情况下与该机系统的默认曲线一致，可对照启动日志的 `Curve check`（与系统表相差超过 5% 时会注明）。
   - 后置光感阈值、HBM 门限仍是小米 17 Pro Max 的值；没有后置光感的机型只用前置。

@@ -16,11 +16,17 @@ sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 revision = subprocess.check_output(['git', 'show', '-s', '--format=%ct'], text=True).strip()
 artifacts = {}
 for abi, elf_class, machine in [('arm64-v8a',2,183),('armeabi-v7a',1,40),('x86_64',2,62),('x86',1,3)]:
-    path=root / f'build/artifacts/core/ios-auto-brightness-android-{abi}/ios_brightness_daemon'
-    elf=path.read_bytes()
-    if elf[:6] != b'\x7fELF'+bytes([elf_class,1]) or int.from_bytes(elf[18:20], 'little') != machine:
-        raise SystemExit(f'Wrong ELF architecture for {abi}')
-    artifacts[f'bin/{abi}/ios_brightness_daemon']=path
+    build = root / f'build/artifacts/core/ios-auto-brightness-android-{abi}'
+    for name, path in [(f'bin/{abi}/ios_brightness_daemon', build / 'ios_brightness_daemon'),
+                       (f'zygisk/{abi}.so', build / 'libiab_zygisk.so')]:
+        elf=path.read_bytes()
+        if elf[:6] != b'\x7fELF'+bytes([elf_class,1]) or int.from_bytes(elf[18:20], 'little') != machine:
+            raise SystemExit(f'Wrong ELF architecture for {name}')
+        artifacts[name]=path
+dex = root / 'build/artifacts/zygisk/anchors.dex'
+if not dex.is_file() or not dex.read_bytes().startswith(b'dex\n'):
+    raise SystemExit('Missing anchors.dex; run tools/build_dex.py')
+artifacts['anchors.dex'] = dex
 for name,path in artifacts.items():
     if not path.is_file() or not path.stat().st_size:
         raise SystemExit(f'Missing build artifact: {name}')
@@ -46,7 +52,8 @@ with zipfile.ZipFile(archive) as z:
     assert z.testzip() is None
     for name in ['module.prop','customize.sh','service.sh','hot-update.sh','hotinstall.sh','start-service.sh','process-group.sh','uninstall.sh','skip_mount',
                  'control.sh','check_status.sh','default.conf','webroot/index.html','webroot/app.js',
-                 'bin/arm64-v8a/ios_brightness_daemon','LICENSE','SOURCE.txt']:
+                 'bin/arm64-v8a/ios_brightness_daemon','zygisk/arm64-v8a.so','zygisk/armeabi-v7a.so','anchors.dex',
+                 'LICENSE','SOURCE.txt']:
         assert name in z.namelist(), name
     assert not any('..' in Path(name).parts or name.startswith('/') for name in z.namelist())
 (out / (archive.name + '.sha256')).write_text(hashlib.sha256(archive.read_bytes()).hexdigest() + '  ' + archive.name + '\n')

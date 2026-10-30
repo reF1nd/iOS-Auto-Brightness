@@ -31,6 +31,14 @@ target_compile_options(ios_brightness_daemon PRIVATE ${IAB_WARNINGS})
 target_compile_definitions(ios_brightness_daemon PRIVATE IAB_VERSION="${IAB_VERSION}")
 if(ANDROID)
   target_link_options(ios_brightness_daemon PRIVATE -Wl,-z,max-page-size=16384 -s)
+  # Zygisk library (zygisk/<abi>.so in the module); see zygisk/module.cpp.
+  add_library(iab_zygisk SHARED zygisk/module.cpp)
+  target_include_directories(iab_zygisk SYSTEM PRIVATE zygisk)
+  target_compile_options(iab_zygisk PRIVATE ${IAB_WARNINGS} -fno-exceptions -fno-rtti -fvisibility=hidden
+    -ffunction-sections -fdata-sections)
+  target_link_libraries(iab_zygisk PRIVATE log)
+  # Only the two Zygisk entry points are exported; the static libc++ stays private.
+  target_link_options(iab_zygisk PRIVATE -Wl,-z,max-page-size=16384 -Wl,--exclude-libs,ALL -Wl,--gc-sections -s)
 endif()
 
 if(BUILD_TESTING)

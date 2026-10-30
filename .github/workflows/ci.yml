@@ -71,6 +71,10 @@ jobs:
           HOT_TEST_BUSYBOX=/usr/bin/busybox python3 tests/process_group_test.py
           python3 tests/hot_update_test.py
           HOT_TEST_BUSYBOX=/usr/bin/busybox python3 tests/hot_update_test.py
+      - name: Check the system_server anchor restore
+        run: |
+          javac -Xlint:all -Werror -d build/java-test zygisk/java/iab/AnchorState.java tests/AnchorStateTest.java
+          java -cp build/java-test iab.AnchorStateTest
       - name: Detect core implementation
         id: core
         run: |
@@ -151,19 +155,27 @@ jobs:
             -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=OFF \
-            -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$GITHUB_WORKSPACE/build/android/bin"
+            -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$GITHUB_WORKSPACE/build/android/bin" \
+            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$GITHUB_WORKSPACE/build/android/bin"
       - name: Build Android core
         run: cmake --build build/android --parallel 2
-      - name: Inspect Android binary
+      - name: Inspect Android binaries
         run: |
-          binary=build/android/bin/ios_brightness_daemon
-          test -s "$binary"
-          "$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -h "$binary"
-          sha256sum "$binary" > "$binary.sha256"
+          tools="$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for binary in build/android/bin/ios_brightness_daemon build/android/bin/libiab_zygisk.so; do
+            test -s "$binary"
+            "$tools/llvm-readelf" -h "$binary"
+            sha256sum "$binary" > "$binary.sha256"
+          done
+          # Zygisk resolves exactly these two entry points; nothing else is exported.
+          exported=$("$tools/llvm-nm" -D --defined-only build/android/bin/libiab_zygisk.so | awk '{print $3}' | sort | tr '\n' ' ')
+          test "$exported" = 'zygisk_companion_entry zygisk_module_entry '
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: ios-auto-brightness-android-${{ matrix.abi }}
-          path: build/android/bin/ios_brightness_daemon*
+          path: |
+            build/android/bin/ios_brightness_daemon*
+            build/android/bin/libiab_zygisk.so*
           if-no-files-found: error
           retention-days: 14
 
@@ -187,6 +199,13 @@ jobs:
           node --check module/webroot/app.js
           node --test tests/webui_test.mjs
           python3 tests/log_tools_test.py
+      - name: Build the system_server dex
+        env:
+          IAB_BUILD_TOOLS: 35.0.0
+          IAB_ANDROID_PLATFORM: '35'
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$IAB_BUILD_TOOLS" "platforms;android-$IAB_ANDROID_PLATFORM"
+          python3 tools/build_dex.py
       - name: Package and validate archive
         run: python3 tools/package.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

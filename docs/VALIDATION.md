@@ -27,6 +27,7 @@
 - `settings_tests`：ABX 编码夹具（字符串池、整数、空值、布尔）、截断文件、文本 XML、配置覆盖规则。
 - `daemon_end_to_end`：真实二进制在模拟 sysfs 与设置文件上运行，检查 0444/0644 切换、照度变化后的写入、状态输出、单实例锁、学习重置、手动模式放权与退出恢复。
 - 安装、启动、cgroup 脱离、热更新事务、日志工具与 WebUI 测试沿用并适配 v7 的用例。
+- `AnchorStateTest`（Java）：解析设备上的 `learn.conf`，写入与 `RefactorNitController` 同名字段的替身（字段在父类上也能找到），检查拖动锚点、清空的空位、good curve、计数器；默认曲线不同、锚点超过 `MAX_ANCHORS` 时不做任何改动；拒绝其他版本、乱序和损坏的文件。CI 另检查 Zygisk 库只导出两个入口。
 
 ### 真机
 

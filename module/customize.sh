@@ -48,6 +48,8 @@ if [ ! -f "$STATE/learn.conf" ]; then
   done
 fi
 chmod 600 "$STATE"/*.conf 2>/dev/null
+# A new install re-enables the Zygisk anchor restore after its crash guard tripped.
+rm -f "$STATE/zygisk.disabled" "$STATE/zygisk.starts"
 # Record first installation even if the hot-update helper cannot run. An active
 # directory alone is not evidence of activation: managers may create it early.
 ACTIVE=/data/adb/modules/ios_auto_brightness
@@ -72,3 +74,4 @@ else
   esac
 fi
 ui_print 'Existing learning offset and configuration are preserved.'
+ui_print 'With Zygisk (Zygisk Next, ReZygisk, NeoZygisk or Magisk), the system keeps the learned curve after a reboot; this part takes effect from the next boot.'

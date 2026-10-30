@@ -36,6 +36,8 @@
   - 拖动点左边取较小值、右边取较大值，保持单调。
   - 实测暗处拖动后锚点为 `[(0.0,7.9595423,user), (30.0,135.0,def), (600.0,220.0,def), (5000.0,1060.0,def)]`。
   - 锚点只在内存里，重启后恢复默认；系统另把当前逻辑尼特存到 `/data/system/refactor_brightness.xml`。
+  - 记录拖动只有一条路径：`DisplayPowerController.setBrightness` → `DisplayPowerControllerImpl.updateLogicalNit` → `updateLogicalCurve(当前照度, 逻辑尼特)`，无法在任意照度下写入锚点。清空锚点的是 `resetDefaultSpline`，来自重启、切换用户、`setBrightnessConfiguration` 和 `resetShortTermModel`；息屏后的 AOSP 短期模型重置在 `needResetShortTermModelPolicy` 为真（本机）时跳过，改由 good curve 处理。
+  - 2026-10-30 实测：暗处拖动后重启，模块恢复了 8.78 逻辑尼特的锚点（目标 148），系统锚点回到默认（2 尼特），节点停在系统写的 43。
 - **good curve**：`config_goodCurveLuxPoints/NitPoints` 为 0/30/1000/5000 lux 时 50/300/550/1060。拖动值高于它时，系统另存一份把拖动换成 good curve 值的锚点。
   - 触发条件是 `config_brightness_reset_policy`（框架默认 false，本机由 `MiuiFrameworkResOverlay` 改为 true）且云端 `mResetShortTermModelPolicyDisable=false`，并且息屏 ≥ 30 分钟，或息屏 ≥ 6 分钟且照度变化超过 20 lux。
   - 满足时，亮屏后的第一个有效照度到来时切换到那份锚点（`AutomaticBrightnessController$ShortTermModel.maybeReset`）。

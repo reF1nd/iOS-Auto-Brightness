@@ -45,7 +45,7 @@ v6.8 的曲线（`ios_curve` 0x5dd4：分 7 段把 lux 换算成 nits；`nits_tb
 | 亮度曲线 | `ios_curve` 与 52 点面板表 | 系统的自动亮度曲线（`system_curve.cpp`） | 用户要求换成系统内置曲线 |
 | 学习触发 | 亮度条变化即学习 | 主屏 `RefactorNitController` 的 `mUserLux`/`mUserLogicalNit` 变化即为一次拖动（设置文件变化时检查，否则每 8 秒），立即按系统规则更新锚点；节点值稳定 1 秒前不写入；`learning_enabled=0` 关闭 | HyperOS 自动亮度会随环境光改写 `screen_brightness`；暗处拖动时它只在个位数内变化，达不到 10 格 |
 | 学习方式 | 全局偏移，每次吸收 10% | `nit_controller.cpp` 完整移植系统的 3 点锚点学习与 good curve | 用户要求完全按系统的学习逻辑 |
-| 学习保存 | 偏移写文件，重启保留 | 锚点写 `learn.conf`，重启保留；没有可用记录时启动接管系统当前的锚点（`dumpsys` 的 `anchors=`） | 系统重启后会清空锚点；保留是用户最初的要求 |
+| 学习保存 | 偏移写文件，重启保留 | 锚点写 `learn.conf`，重启保留；没有可用记录时启动接管系统当前的锚点（`dumpsys` 的 `anchors=`） | 系统重启后会清空锚点；保留是用户最初的要求。装有 Zygisk 时开机把 `learn.conf` 写回系统，否则系统重启后按默认曲线写入 |
 | 后置光感 | 仅前置为负时使用 | `dual_sensor.cpp` 按 HyperOS `DualSensorPolicy` 选择照度，`dual_sensor=0` 恢复 v6.8 行为 | 按用户要求参考系统原生的前后光感逻辑 |
 | 启动回差 | 尚无上次目标（0）时，与当前亮度比较落入回差就把目标换成 0，写入最低亮度后再回升 | 沿用当前亮度 | 明显缺陷，只出现在启动后的第一轮 |
 | 路径 | `/data/local/tmp/ios_brightness*` | `/data/adb/ios_auto_brightness/`，安装时迁移 v6.8 的配置与偏移 | 私有目录、热更新与 WebUI |
