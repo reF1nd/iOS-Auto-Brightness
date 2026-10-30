@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -18,9 +19,11 @@
 #include <string>
 #include <vector>
 
+#include "android_resources.hpp"
 #include "config.hpp"
 #include "engine.hpp"
 #include "settings_reader.hpp"
+#include "system_curve.hpp"
 
 #ifndef IAB_VERSION
 #define IAB_VERSION "dev"
@@ -107,6 +110,11 @@ std::string run_command(const std::string& command, size_t limit = 1 << 20) {
   return out;
 }
 
+std::string trimmed(std::string text) {
+  while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
+  return text;
+}
+
 std::string json_escape(const std::string& text) {
   std::string out;
   for (const char c : text) {
@@ -117,8 +125,22 @@ std::string json_escape(const std::string& text) {
   return out;
 }
 
-float sanitized_offset(float offset) {
-  return std::isfinite(offset) && std::fabs(offset) <= 0.3f ? offset : 0.0f;
+constexpr char kRefactorSection[] = "Refactor Nit Controller Configuration:";
+
+// The RefactorNitController block of the main display in dumpsys display.
+std::string refactor_section(const std::string& dump) {
+  for (size_t at = dump.find(kRefactorSection); at != std::string::npos; at = dump.find(kRefactorSection, at + 1)) {
+    const size_t end = dump.find("\n\n", at);
+    const std::string block = dump.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    if (block.find("mDisplayId=0\n") != std::string::npos) return block;
+  }
+  return "";
+}
+
+float dump_value(const std::string& block, const char* key) {
+  const size_t at = block.find(key);
+  if (at == std::string::npos) return NAN;
+  return std::strtof(block.c_str() + at + std::strlen(key), nullptr);
 }
 
 // ASensorEvent layout of <android/sensor.h>.
@@ -318,7 +340,7 @@ class AndroidPlatform final : public iab::Platform {
   }
 
   bool read_settings(iab::SystemSettings& out) override {
-    const bool ok = iab::read_system_settings(device_path("/data/system/users/0/settings_system.xml"), out);
+    const bool ok = iab::read_system_settings(settings_path(), out);
     settings_status_ = ok ? "ok" : "unreadable";
     return ok;
   }
@@ -416,45 +438,56 @@ class AndroidPlatform final : public iab::Platform {
     closedir(dir);
     return on;
   }
-  bool user_adjusted() override {
-    const std::string point = user_point();
+  bool user_drag(float& lux, float& logical) override {
+    // dumpsys display is large: query it when the settings file changed (a
+    // drag persists the slider) and otherwise every 8 s.
+    const int64_t now = monotonic_ms();
+    struct stat info{};
+    long long stamp = 0;
+    if (stat(settings_path().c_str(), &info) == 0) {
+#ifdef __APPLE__
+      const long nanoseconds = info.st_mtimespec.tv_nsec;
+#else
+      const long nanoseconds = info.st_mtim.tv_nsec;
+#endif
+      stamp = (static_cast<long long>(info.st_mtime) * 1000000000LL + nanoseconds) ^
+              static_cast<long long>(info.st_size);
+    }
+    if (stamp == settings_stamp_ && now - user_checked_ < 8000) return false;
+    settings_stamp_ = stamp;
+    user_checked_ = now;
+    float user_lux = 0.0f, user_logical = 0.0f;
+    const std::string point = user_point(user_lux, user_logical);
     if (point.empty()) return false;
-    const bool changed = point != last_user_point_ && point.find("NaN") == std::string::npos;
+    const bool changed = point != last_user_point_ && user_lux >= 0.0f && user_logical >= 0.0f;
     last_user_point_ = point;
+    if (changed) lux = user_lux, logical = user_logical;
     return changed;
   }
-  void save_learning(float offset) override {
+  int64_t elapsed_ms() override { return boottime_ms(); }
+  void save_learning(const std::string& text) override {
     const std::string path = g_state_dir + "/learn.conf", temporary = path + ".tmp";
     FILE* file = std::fopen(temporary.c_str(), "w" IAB_CLOEXEC);
     if (!file) return;
-    std::fprintf(file, "user_offset=%f\n", offset);
+    std::fwrite(text.data(), 1, text.size(), file);
     const bool ok = std::fflush(file) == 0 && fsync(fileno(file)) == 0;
     std::fclose(file);
     if (ok) rename(temporary.c_str(), path.c_str());
   }
   void log(const std::string& line) override { log_line(line.c_str()); }
 
-  void prime_user_point() { last_user_point_ = user_point(); }
+  void prime_user_point() {
+    float lux = 0.0f, logical = 0.0f;
+    last_user_point_ = user_point(lux, logical);
+    user_checked_ = monotonic_ms();
+  }
   const std::string& settings_status() const { return settings_status_; }
   std::string backlight_file(const char* name) const { return backlight_ + "/" + name; }
 
  private:
-  static std::string trimmed(std::string text) {
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
-    return text;
-  }
-  // mUserLux/mUserBrightness of the framework mapping strategy change only on
-  // user slider input, never on automatic rewrites of screen_brightness.
-  std::string user_point() {
-    const std::string dump = run_command("dumpsys display 2>/dev/null");
-    std::string point;
-    for (const char* key : {"mUserLux=", "mUserBrightness="}) {
-      const size_t at = dump.find(key);
-      if (at == std::string::npos) return "";
-      point += dump.substr(at, dump.find('\n', at) - at) + ";";
-    }
-    return point;
-  }
+  // mUserLux/mUserLogicalNit of RefactorNitController change only when a
+  // drag reaches updateLogicalCurve, never on automatic slider rewrites.
+  static std::string user_point(float& lux, float& logical);
 
   std::string backlight_;
   Sensors& sensors_;
@@ -463,9 +496,24 @@ class AndroidPlatform final : public iab::Platform {
   float dumpsys_lux_ = -1.0f;
   bool zones_scanned_ = false;
   std::vector<int> zones_;
+  std::string settings_path() const { return device_path("/data/system/users/0/settings_system.xml"); }
+
   std::string last_user_point_;
+  long long settings_stamp_ = 0;
+  int64_t user_checked_ = 0;
   std::string settings_status_ = "unread";
 };
+
+std::string AndroidPlatform::user_point(float& lux, float& logical) {
+  const std::string block = refactor_section(run_command("dumpsys display 2>/dev/null"));
+  if (block.empty()) return "";
+  lux = dump_value(block, "mUserLux=");
+  logical = dump_value(block, "mUserLogicalNit=");
+  if (!std::isfinite(lux) || !std::isfinite(logical)) return "";
+  char point[64];
+  std::snprintf(point, sizeof point, "%.7g %.7g", lux, logical);
+  return point;
+}
 
 std::string find_backlight() {
   const std::string preferred = device_path("/sys/class/backlight/panel0-backlight");
@@ -485,13 +533,156 @@ std::string find_backlight() {
   return preferred;
 }
 
-float load_offset(const std::string& path) {
-  FILE* file = std::fopen(path.c_str(), "r" IAB_CLOEXEC);
-  if (!file) return 0.0f;
-  float offset = 0.0f;
-  if (std::fscanf(file, "user_offset=%f", &offset) != 1) offset = 0.0f;
-  std::fclose(file);
-  return sanitized_offset(offset);
+std::vector<float> float_list(const std::string& text, size_t at, size_t end) {
+  std::vector<float> out;
+  std::string list = text.substr(at, end - at);
+  char* cursor = &list[0];
+  while (*cursor) {
+    char* next = nullptr;
+    const float value = std::strtof(cursor, &next);
+    if (next == cursor) break;
+    out.push_back(value);
+    cursor = next;
+    while (*cursor == ',' || *cursor == ' ') ++cursor;
+  }
+  return out;
+}
+
+// screenBrightnessMap of the main display, from the first DisplayDeviceConfig
+// in the dump ("mNits=[...] ... mBrightness=[...]" on one line).
+iab::PanelMap read_panel_map(const std::string& dump) {
+  const size_t nits = dump.find("mNits=[");
+  if (nits == std::string::npos) return iab::PanelMap({}, {});
+  const size_t brightness = dump.find("mBrightness=[", nits);
+  if (brightness == std::string::npos || dump.find('\n', nits) < brightness) return iab::PanelMap({}, {});
+  return iab::PanelMap(float_list(dump, brightness + 13, dump.find(']', brightness)),
+                       float_list(dump, nits + 7, dump.find(']', nits)));
+}
+
+// The (lux, nits) points of the first BrightnessConfiguration: the default
+// curve of the AOSP mapper.
+bool read_brightness_configuration(const std::string& dump, std::vector<float>& lux, std::vector<float>& nits) {
+  static const char kKey[] = "mConfig=BrightnessConfiguration{[";
+  const size_t at = dump.find(kKey);
+  if (at == std::string::npos) return false;
+  const size_t end = dump.find(']', at);
+  for (size_t p = dump.find('(', at); p < end; p = dump.find('(', p + 1)) {
+    const std::vector<float> pair = float_list(dump, p + 1, dump.find(')', p));
+    if (pair.size() == 2) lux.push_back(pair[0]), nits.push_back(pair[1]);
+  }
+  return lux.size() >= 2;
+}
+
+bool safe_package(const std::string& name) {
+  return !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_';
+  });
+}
+
+// framework-ext-res (com.miui.rom) values of RefactorBrightnessUtil and
+// RefactorNitController, with the enabled overlays applied in priority order.
+iab::RefactorConfig read_refactor_config() {
+  static const std::vector<std::string> kWanted = {
+      "dimen/config_minLogicalNit",        "dimen/config_maxLogicalNit",
+      "dimen/config_firstNitNode",         "dimen/config_secondNitNode",
+      "array/config_firstFactorConfig",    "array/config_secondFactorConfig",
+      "array/config_defaultLogicalCurve",  "array/config_highLuxPoints",
+      "array/config_highLuxScalingFactorPoints", "array/config_goodCurveLuxPoints",
+      "array/config_goodCurveNitPoints",   "bool/config_brightness_reset_policy"};
+  iab::RefactorConfig config;
+  std::string base = trimmed(run_command("pm path com.miui.rom 2>/dev/null"));
+  if (base.rfind("package:", 0) == 0) base = base.substr(8);
+  if (base.empty()) base = "/system_ext/framework/framework-ext-res/framework-ext-res.apk";
+  iab::ResourceValues values;
+  std::string error;
+  if (!iab::read_apk_resources(device_path(base), kWanted, values, error)) {
+    log_line(("Curve: " + base + ": " + error + "; using the altdb values").c_str());
+    return config;
+  }
+  int overlays = 0;
+  const std::string list = run_command("cmd overlay list com.miui.rom 2>/dev/null");
+  for (size_t at = list.find("[x] "); at != std::string::npos; at = list.find("[x] ", at + 1)) {
+    const std::string name = trimmed(list.substr(at + 4, list.find('\n', at) - at - 4));
+    if (!safe_package(name)) continue;
+    const std::string dump = run_command("cmd overlay dump " + name + " 2>/dev/null");
+    const size_t key = dump.find("mBaseCodePath");
+    const size_t colon = key == std::string::npos ? key : dump.find(": ", key);
+    if (colon == std::string::npos) continue;
+    const std::string path = trimmed(dump.substr(colon + 2, dump.find('\n', colon) - colon - 2));
+    if (path.size() > 4 && path.compare(path.size() - 4, 4, ".apk") == 0 &&
+        iab::read_apk_resources(device_path(path), kWanted, values, error)) {
+      ++overlays;
+    }
+  }
+  iab::RefactorConfig read = config;
+  const auto scalar = [&](const char* name, float& field) {
+    const auto found = values.find(name);
+    if (found != values.end() && found->second.size() == 1) field = found->second[0];
+  };
+  const auto array = [&](const char* name, std::vector<float>& field) {
+    const auto found = values.find(name);
+    if (found != values.end()) field = found->second;
+  };
+  scalar("dimen/config_minLogicalNit", read.min_nit);
+  scalar("dimen/config_maxLogicalNit", read.max_nit);
+  scalar("dimen/config_firstNitNode", read.first_node);
+  scalar("dimen/config_secondNitNode", read.second_node);
+  array("array/config_firstFactorConfig", read.first_factor);
+  array("array/config_secondFactorConfig", read.second_factor);
+  array("array/config_defaultLogicalCurve", read.default_curve);
+  array("array/config_highLuxPoints", read.high_lux);
+  array("array/config_highLuxScalingFactorPoints", read.high_scale);
+  array("array/config_goodCurveLuxPoints", read.good_lux);
+  array("array/config_goodCurveNitPoints", read.good_nit);
+  float reset = 0.0f;
+  scalar("bool/config_brightness_reset_policy", reset);
+  read.reset_policy = reset != 0.0f;
+  if (!read.valid()) {
+    log_line(("Curve: unusable framework-ext-res values in " + base + "; using the altdb values").c_str());
+    return config;
+  }
+  char text[256];
+  std::snprintf(text, sizeof text,
+                "Curve: framework-ext-res + %d overlays, anchors (0,%g) (%g,%g) (%g,%g) (%g,%g), reset policy %s",
+                overlays, read.default_curve[1], read.seg0(), read.default_curve[3], read.seg1(), read.default_curve[6],
+                read.lux_max(), read.max_nit, read.reset_policy ? "on" : "off");
+  log_line(text);
+  return read;
+}
+
+// The system's auto-brightness curve for this ROM (see system_curve.hpp).
+iab::SystemCurve load_system_curve(const std::string& dump, const iab::PanelMap& panel) {
+  const std::string policy = trimmed(run_command(
+      "cmd overlay lookup android android:bool/config_refactor_brightness_policy 2>/dev/null"));
+  const bool section = !refactor_section(dump).empty();
+  const bool refactor = policy == "true" || (policy != "false" && section);
+  std::vector<float> lux, nits;
+  const bool table = read_brightness_configuration(dump, lux, nits);
+  char text[256];
+  if (!refactor && table) {
+    std::snprintf(text, sizeof text, "Curve: BrightnessConfiguration (%zu points); refactor policy %s, drags are not learned",
+                  lux.size(), policy.empty() ? "unknown" : policy.c_str());
+    log_line(text);
+    return iab::SystemCurve(lux, nits, panel);
+  }
+  iab::RefactorConfig config = read_refactor_config();
+  if (dump.find("mResetShortTermModelPolicyDisable=true") != std::string::npos) config.reset_policy = false;
+  iab::SystemCurve curve(config, panel);
+  if (table) {
+    // On altdb the two agree within 1.5% from 1 lux up (the table starts at
+    // 1 nit, the anchors at 2); far apart means unexpected values were read.
+    float worst = 0.0f, worst_lux = 0.0f;
+    for (size_t i = 0; i < lux.size(); ++i) {
+      if (lux[i] < 1.0f || !(nits[i] > 0.0f)) continue;
+      const float deviation = std::fabs(curve.default_nits(lux[i]) - nits[i]) / nits[i];
+      if (deviation > worst) worst = deviation, worst_lux = lux[i];
+    }
+    std::snprintf(text, sizeof text, "Curve check: defaults vs BrightnessConfiguration max %.1f%% at %.0f lux%s",
+                  worst * 100.0f, worst_lux, worst > 0.05f ? " (unexpected, check the ROM values)" : "");
+    log_line(text);
+  }
+  if (!refactor) log_line("Curve: no refactor policy or BrightnessConfiguration found; HyperOS curve without learning input");
+  return curve;
 }
 
 time_t file_mtime(const std::string& path) {
@@ -500,9 +691,32 @@ time_t file_mtime(const std::string& path) {
 }
 
 void write_status(const Engine& engine, const AndroidPlatform& platform, const Config& config,
-                  const std::string& backlight, int64_t started, int64_t now) {
+                  const std::string& backlight, const std::string& curve_source, int64_t started, int64_t now) {
   const iab::EngineStatus s = engine.status();
-  char buffer[4096];
+  const iab::SystemCurve& curve = engine.curve();
+  const iab::NitController& controller = curve.controller();
+  std::string anchors;
+  // [lux, logical nits, dragged, panel level there before the night factor]
+  for (const iab::Anchor& anchor : curve.learnable() ? controller.anchors() : std::vector<iab::Anchor>{}) {
+    char item[96];
+    std::snprintf(item, sizeof item, "%s[%.2f,%.2f,%d,%d]", anchors.empty() ? "" : ",", anchor.lux, anchor.nit,
+                  anchor.user ? 1 : 0,
+                  curve.level(iab::refactor_nits(controller.config(), anchor.nit, anchor.lux), s.max_level));
+    anchors += item;
+  }
+  // The current and the default curve for the WebUI chart, 0.1..100000 lux,
+  // before the night and battery limits.
+  std::string current, defaults;
+  for (int i = 0; i <= 30; ++i) {
+    const float lux = std::pow(10.0f, static_cast<float>(i) / 5.0f - 1.0f);
+    char item[48];
+    std::snprintf(item, sizeof item, "%s[%.4g,%d]", current.empty() ? "" : ",", lux, engine.curve_level(lux));
+    current += item;
+    std::snprintf(item, sizeof item, "%s[%.4g,%d]", defaults.empty() ? "" : ",", lux,
+                  curve.level(curve.default_nits(lux), s.max_level));
+    defaults += item;
+  }
+  char buffer[8192];
   const int length = std::snprintf(
       buffer, sizeof buffer,
       "{\"ok\":true,\"version\":\"%s\",\"pid\":%d,\"heartbeat_ms\":%lld,\"uptime_ms\":%lld,"
@@ -510,7 +724,9 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
       "\"front_lux\":%.2f,\"back_lux\":%.2f,\"input_lux\":%.2f,\"lux_source\":\"%s\","
       "\"filtered_lux\":%.2f,\"smoothed_lux\":%.2f,\"alpha\":%.3f,\"nits\":%.2f,"
       "\"target\":%d,\"current\":%d,\"max\":%d,\"poll_ms\":%d,\"slider\":%d,"
-      "\"user_offset\":%.4f,\"learning_enabled\":%s,\"last_learning\":\"%s\",\"dual_sensor\":%s,"
+      "\"curve_source\":\"%s\",\"learnable\":%s,\"learning_enabled\":%s,\"last_learning\":\"%s\","
+      "\"anchors\":[%s],\"good_curve\":%s,\"reset_policy\":%s,\"user_lux\":%.2f,\"user_logical\":%.2f,"
+      "\"curve\":[%s],\"default_curve\":[%s],\"dual_sensor\":%s,"
       "\"sunlight\":%s,\"fast_dark\":%s,\"stable_count\":%d,\"bright_count\":%d,\"dark_count\":%d,"
       "\"sunlight_count\":%d,\"battery\":%d,\"charging\":%s,\"settings\":\"%s\",\"backlight\":\"%s\","
       "\"local_hour\":%d}\n",
@@ -518,8 +734,11 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
       static_cast<long long>(now - started), s.automatic ? "auto" : "manual", s.mode_setting,
       s.screen_on ? "true" : "false", s.proximity_near ? "true" : "false", s.front_lux, s.back_lux,
       s.input_lux, s.lux_source.c_str(), s.filtered_lux, s.smoothed_lux, s.alpha, s.nits, s.target,
-      s.current, s.max_level, s.poll_ms, s.slider, s.user_offset, config.learning_enabled ? "true" : "false",
-      s.last_learning.c_str(), config.dual_sensor ? "true" : "false", s.sunlight ? "true" : "false",
+      s.current, s.max_level, s.poll_ms, s.slider, json_escape(curve_source).c_str(),
+      curve.learnable() ? "true" : "false", config.learning_enabled ? "true" : "false", s.last_learning.c_str(),
+      anchors.c_str(), controller.has_good_curve() ? "true" : "false",
+      controller.config().reset_policy ? "true" : "false", controller.user_lux(), controller.user_logical(),
+      current.c_str(), defaults.c_str(), config.dual_sensor ? "true" : "false", s.sunlight ? "true" : "false",
       s.fast_dark ? "true" : "false", s.stable_count, s.bright_count, s.dark_count, s.sunlight_count,
       s.battery, s.charging ? "true" : "false", platform.settings_status().c_str(),
       json_escape(backlight).c_str(), local_hour_now());
@@ -609,12 +828,6 @@ int run(const std::string& state) {
   Config config;
   iab::load_config(config_path, config);
   time_t config_mtime = file_mtime(config_path);
-  const float offset = load_offset(state + "/learn.conf");
-  if (std::fabs(offset) > 0.001f) {
-    char text[64];
-    std::snprintf(text, sizeof text, "Learn: offset=%.3f", offset);
-    log_line(text);
-  }
   const std::string backlight = find_backlight();
   int max_level = read_int(backlight + "/max_brightness", 0);
   if (max_level <= 0) max_level = 16383;
@@ -623,7 +836,7 @@ int run(const std::string& state) {
     if (file) std::fprintf(file, "%s\n", backlight.c_str()), std::fclose(file);
   }
   char text[256];
-  std::snprintf(text, sizeof text, "iOS Brightness %s (v6.8 reference engine) | %s | Max: %d", IAB_VERSION,
+  std::snprintf(text, sizeof text, "iOS Brightness %s (v6.8 control loop, system curve) | %s | Max: %d", IAB_VERSION,
                 backlight.c_str(), max_level);
   log_line(text);
   std::snprintf(text, sizeof text, "阳光模式: threshold=%.0f boost_max=%.0f%% min=%.0f%% duration=%dms",
@@ -636,7 +849,39 @@ int run(const std::string& state) {
   AndroidPlatform platform(backlight, sensors);
   if (!sensors.ndk()) platform.discover_fallback();
   platform.prime_user_point();
-  Engine engine(platform, config, max_level, offset);
+  const std::string dump = run_command("dumpsys display 2>/dev/null");
+  iab::PanelMap panel = read_panel_map(dump);
+  if (!panel.valid()) {
+    log_line("Panel map: dumpsys unavailable, using the altdb display config");
+    panel = iab::PanelMap();
+  }
+  iab::SystemCurve curve = load_system_curve(dump, panel);
+  const std::string curve_source = !curve.learnable() ? "BrightnessConfiguration" : "RefactorNitController";
+  {
+    std::string saved;
+    bool restored = false;
+    if (read_text(state + "/learn.conf", saved, 16384) && !saved.empty()) {
+      iab::NitController& controller = curve.controller();
+      restored = controller.parse(saved);
+      if (restored) {
+        std::snprintf(text, sizeof text, "Learn: %d dragged anchors restored%s", controller.user_anchors(),
+                      controller.has_good_curve() ? " (good curve pending)" : "");
+      } else if (saved.find("version=2") == std::string::npos) {
+        std::snprintf(text, sizeof text, "Learn: earlier learn.conf (v6.8 offset or beta points) is not used");
+      } else {
+        std::snprintf(text, sizeof text, "Learn: learn.conf was made for other default anchors; starting over");
+      }
+      log_line(text);
+    }
+    // Nothing of ours yet: take over the drags the framework holds since boot.
+    if (!restored && curve.learnable() && curve.controller().adopt(refactor_section(dump))) {
+      std::snprintf(text, sizeof text, "Learn: took over %d dragged anchors from the system",
+                    curve.controller().user_anchors());
+      log_line(text);
+      platform.save_learning(curve.controller().serialize());
+    }
+  }
+  Engine engine(platform, config, max_level, curve);
   engine.begin(monotonic_ms());
 
   log_line("Waiting for sensor...");
@@ -666,7 +911,7 @@ int run(const std::string& state) {
     FILE* file = std::fopen((state + "/daemon.pid").c_str(), "w" IAB_CLOEXEC);
     if (file) std::fprintf(file, "%d\n", static_cast<int>(getpid())), std::fclose(file);
   }
-  write_status(engine, platform, config, backlight, started, started);
+  write_status(engine, platform, config, backlight, curve_source, started, started);
 
   int64_t last_tick = started, config_checked = started;
   while (g_run) {
@@ -689,10 +934,12 @@ int run(const std::string& state) {
     if (now - last_tick >= engine.poll_ms()) {
       engine.tick(now);
       last_tick = now;
+    } else {
+      engine.check_learning(now);
     }
     if (g_dump_status) {
       g_dump_status = 0;
-      write_status(engine, platform, config, backlight, started, monotonic_ms());
+      write_status(engine, platform, config, backlight, curve_source, started, monotonic_ms());
     }
     const int64_t remaining = engine.poll_ms() - (monotonic_ms() - last_tick);
     if (remaining > 0 && g_run && !g_dump_status) sleep_ms(std::min<int64_t>(remaining, 1000));

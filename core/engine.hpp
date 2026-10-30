@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// One-to-one port of the v6.8 reference daemon's control loop (main() of
-// ios_brightness_daemon). Every tick mirrors one pass of its polling loop;
+// Port of the v6.8 reference daemon's control loop (main() of
+// ios_brightness_daemon) driving the system's own brightness curve instead of
+// the reference one. Every tick mirrors one pass of its polling loop;
 // hardware and Android access go through Platform so the logic is testable.
 #pragma once
 
@@ -11,6 +12,7 @@
 #include "config.hpp"
 #include "dual_sensor.hpp"
 #include "settings_reader.hpp"
+#include "system_curve.hpp"
 
 namespace iab {
 
@@ -41,9 +43,12 @@ class Platform {
   // Highest valid temperature (C) of battery/skin/shell/quiet/back/soc zones, 0 if none.
   virtual int boost_temperature() = 0;
   virtual bool other_display_on() = 0;
-  // True once per genuine user slider drag (framework short-term model point).
-  virtual bool user_adjusted() = 0;
-  virtual void save_learning(float offset) = 0;
+  // True once per slider drag the framework learned in auto mode, with the
+  // lux and logical nits RefactorNitController.updateLogicalCurve received.
+  virtual bool user_drag(float& lux, float& logical) = 0;
+  // CLOCK_BOOTTIME milliseconds (SystemClock.elapsedRealtime).
+  virtual int64_t elapsed_ms() = 0;
+  virtual void save_learning(const std::string& text) = 0;
   virtual void log(const std::string& line) = 0;
 };
 
@@ -51,7 +56,7 @@ struct EngineStatus {
   bool automatic = false, screen_on = false, proximity_near = false;
   bool sunlight = false, fast_dark = false, using_rear = false;
   float front_lux = -1, back_lux = -1, input_lux = -1, filtered_lux = 0, smoothed_lux = 0;
-  float alpha = 0, nits = 0, user_offset = 0;
+  float alpha = 0, nits = 0;
   int target = 0, current = 0, poll_ms = 0, slider = -1, mode_setting = -1, max_level = 0;
   int stable_count = 0, bright_count = 0, dark_count = 0, sunlight_count = 0;
   int battery = 100;
@@ -62,20 +67,24 @@ struct EngineStatus {
 
 class Engine {
  public:
-  Engine(Platform& platform, const Config& config, int max_level, float user_offset);
+  Engine(Platform& platform, const Config& config, int max_level, const SystemCurve& curve = SystemCurve());
 
-  void set_config(const Config& config) { config_ = config; }
+  void set_config(const Config& config);
   // Reference startup before the sensor wait: settings, node lock, warm start.
   void begin(int64_t now);
   void apply_events(const std::vector<SensorEvent>& events);
   float front_lux() const { return front_lux_; }
   void start(int64_t now, float initial_lux);
   void tick(int64_t now);
+  // Called about once a second between ticks to catch slider drags promptly.
+  void check_learning(int64_t now);
+  // Panel level of the curve at this lux, before the night and battery limits.
+  int curve_level(float lux) const { return curve_.level(curve_.nits(lux), max_); }
   void reset_learning();
   void shutdown();
 
   int poll_ms() const { return poll_ms_; }
-  float user_offset() const { return user_offset_; }
+  const SystemCurve& curve() const { return curve_; }
   EngineStatus status() const;
 
  private:
@@ -91,19 +100,28 @@ class Engine {
   void enable_sensors();
   void disable_sensors();
   float select_lux(int64_t now);
-  int apply_offset_and_limits(int level, int64_t now);
+  int apply_limits(int level, int64_t now);
   void wake(int64_t now);
-  void learn();
+  void check_good_curve(float lux);
   void log(const char* format, ...) __attribute__((format(printf, 2, 3)));
 
   Platform& platform_;
   Config config_;
   const int max_;
-  float user_offset_;
+  SystemCurve curve_;
   DualSensorPolicy dual_;
+  bool learn_pending_ = false;
+  int64_t learn_since_ = 0;
+  int learn_level_ = -1;
+  // Screen-off bookkeeping of AutomaticBrightnessControllerImpl for the good
+  // curve: when and at what lux the screen went off, and the check pending
+  // until the first light reading after waking.
+  int64_t closed_at_ = -1, woke_at_ = 0;
+  float closed_lux_ = 0;
+  bool reset_check_ = false, fresh_front_ = false;
 
   // Reference globals.
-  int cached_auto_ = -1, cached_slider_ = 128, prev_slider_ = -1;
+  int cached_auto_ = -1, cached_slider_ = 128;
   int64_t last_settings_ = 0;
   float front_lux_ = -1, back_lux_ = -1;
   bool proximity_near_ = false, sensors_enabled_ = true;

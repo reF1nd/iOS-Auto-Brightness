@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "check.hpp"
-#include "curve.hpp"
 #include "engine.hpp"
 
 using namespace iab;
@@ -13,6 +12,12 @@ using namespace iab;
 namespace {
 
 constexpr int kMax = 16383;
+
+// The default system curve (altdb framework-ext-res) at this lux.
+int curve_level(float lux, int max_level) {
+  static const SystemCurve curve;
+  return curve.level(curve.nits(lux), max_level);
+}
 
 struct FakePhone : Platform {
   SystemSettings settings{1, 100};
@@ -28,9 +33,11 @@ struct FakePhone : Platform {
   bool charging = false;
   int temperature = 30;
   bool other_display = false;
-  bool user_drag = false;
-  int user_checks = 0;
-  float saved_offset = 99.0f;
+  bool drag = false;
+  float drag_lux = 0, drag_logical = 0;
+  int64_t elapsed = 1000000;
+  std::string saved;
+  int saves = 0;
   std::vector<std::string> lines;
 
   bool read_settings(SystemSettings& out) override {
@@ -60,11 +67,18 @@ struct FakePhone : Platform {
   }
   int boost_temperature() override { return temperature; }
   bool other_display_on() override { return other_display; }
-  bool user_adjusted() override {
-    ++user_checks;
-    return user_drag;
+  bool user_drag(float& lux, float& logical) override {
+    if (!drag) return false;
+    drag = false;
+    lux = drag_lux;
+    logical = drag_logical;
+    return true;
   }
-  void save_learning(float offset) override { saved_offset = offset; }
+  int64_t elapsed_ms() override { return elapsed; }
+  void save_learning(const std::string& text) override {
+    saved = text;
+    ++saves;
+  }
   void log(const std::string& line) override { lines.push_back(line); }
 };
 
@@ -74,8 +88,8 @@ struct Rig {
   Engine engine;
   int64_t now = 0;
 
-  explicit Rig(float initial_lux, int current = 1000, Config c = Config{})
-      : config(c), engine(phone, c, kMax, 0.0f) {
+  explicit Rig(float initial_lux, int current = 1000, Config c = Config{}, const SystemCurve& curve = SystemCurve())
+      : config(c), engine(phone, c, kMax, curve) {
     phone.level = current;
     engine.begin(now);
     phone.pending.push_back({SensorEvent::Kind::Front, now, initial_lux});
@@ -88,6 +102,7 @@ struct Rig {
   void rear(float lux) { phone.pending.push_back({SensorEvent::Kind::Back, now, lux}); }
   void tick() {
     now += engine.poll_ms();
+    phone.elapsed += engine.poll_ms();
     engine.tick(now);
   }
   void ticks(int count) {
@@ -253,40 +268,186 @@ void stable_light_slows_polling() {
   CHECK_EQ(rig.engine.poll_ms(), 8000);
 }
 
-void learning_follows_reference_formula_only_for_drags() {
-  Rig rig(60.0f, curve_level(60.0f, kMax));
-  rig.ticks(11);  // one settings refresh after the first tick
-  rig.phone.settings.brightness = 200;
-  rig.phone.user_drag = false;
-  rig.ticks(11);
-  CHECK_EQ(rig.phone.user_checks, 1);
-  CHECK_NEAR(rig.engine.user_offset(), 0.0, 1e-9);
-  CHECK(rig.engine.status().last_learning == "ignored_system_change");
+// A drag the framework learned: it reports the lux and slider logical nits
+// and shows the chosen level on the panel.
+void drag(Rig& rig, float lux, float logical, int level) {
+  rig.phone.level = level;
+  rig.phone.drag = true;
+  rig.phone.drag_lux = lux;
+  rig.phone.drag_logical = logical;
+  rig.engine.check_learning(rig.now);
+}
 
-  rig.phone.settings.brightness = 120;
-  rig.phone.user_drag = true;
-  rig.ticks(11);
-  const int target = rig.engine.status().target;
-  const float expected =
-      static_cast<float>(slider_level(120, 2.2f, kMax) - target) / static_cast<float>(kMax) * 0.1f;
-  CHECK_EQ(rig.phone.user_checks, 2);
+void settle(Rig& rig, int checks) {
+  for (int i = 0; i < checks; ++i) {
+    rig.now += 1000;
+    rig.phone.elapsed += 1000;
+    rig.engine.check_learning(rig.now);
+  }
+}
+
+int user_anchors(const Engine& engine) { return engine.curve().controller().user_anchors(); }
+
+void dark_drag_is_learned_and_kept() {
+  Rig rig(0.0f, 1);
+  rig.ticks(30);
+  CHECK_EQ(rig.engine.status().target, curve_level(0.0f, kMax));
+  drag(rig, 0.0f, 7.9595423f, 154);
   CHECK(rig.engine.status().last_learning == "learned");
-  CHECK(std::fabs(rig.engine.user_offset()) > 0.0f);
-  CHECK_NEAR(rig.phone.saved_offset, rig.engine.user_offset(), 1e-9);
-  CHECK(std::fabs(rig.engine.user_offset()) <= 0.3f);
-  CHECK((expected > 0) == (rig.engine.user_offset() > 0));
+  CHECK_EQ(user_anchors(rig.engine), 1);
+  CHECK(rig.phone.saved.find("anchor=0 7.959542") != std::string::npos);
+  // While the panel settles at the dragged level nothing is written.
+  rig.phone.writes.clear();
+  rig.ticks(2);
+  CHECK(rig.phone.writes.empty());
+  settle(rig, 2);
+  CHECK_EQ(rig.engine.status().current, 154);
+  // Then the curve through the new anchor takes over: 7.96 nits at 0 lux.
+  rig.ticks(30);
+  const SystemCurve& curve = rig.engine.curve();
+  CHECK_EQ(rig.engine.status().target, curve.level(7.9595423f, kMax));
+  CHECK_EQ(rig.phone.level, rig.engine.status().target);
+
+  // After a restart the saved anchors drive the dark target by themselves.
+  SystemCurve restored;
+  CHECK(restored.controller().parse(rig.phone.saved));
+  Rig restarted(0.0f, 1, Config{}, restored);
+  restarted.ticks(30);
+  CHECK_EQ(restarted.engine.status().target, curve.level(7.9595423f, kMax));
+}
+
+void learning_follows_the_system_segments() {
+  Rig rig(60.0f, curve_level(60.0f, kMax));
+  rig.ticks(30);
+  drag(rig, 60.0f, 300.0f, 3000);
+  settle(rig, 2);
+  drag(rig, 200.0f, 250.0f, 2500);  // same segment, contradicts the first
+  settle(rig, 2);
+  CHECK_EQ(user_anchors(rig.engine), 1);
+  drag(rig, 5.0f, 40.0f, 500);
+  settle(rig, 2);
+  drag(rig, 3000.0f, 700.0f, 9000);
+  settle(rig, 2);
+  CHECK_EQ(user_anchors(rig.engine), 3);
+  CHECK_EQ(rig.phone.saves, 4);
+}
+
+void night_factor_applies_on_top() {
+  Rig rig(0.0f, 1);
+  rig.phone.hour = 23;
+  rig.ticks(30);
+  drag(rig, 0.0f, 50.0f, 900);
+  settle(rig, 2);
+  rig.ticks(30);
+  const SystemCurve& curve = rig.engine.curve();
+  // 50 logical nits are about 34 actual nits in the dark.
+  CHECK_EQ(rig.engine.status().target, static_cast<int>(0.95f * static_cast<float>(curve.level(curve.nits(0.0f), kMax))));
+  CHECK_NEAR(curve.nits(0.0f), 34.357, 1e-3);
+}
+
+void learning_waits_for_the_ramp() {
+  Rig rig(60.0f, curve_level(60.0f, kMax));
+  rig.ticks(30);
+  drag(rig, 60.0f, 400.0f, 2500);
+  rig.phone.level = 2800;
+  settle(rig, 1);
+  rig.phone.level = 3000;
+  settle(rig, 1);
+  rig.phone.writes.clear();
+  rig.tick();
+  CHECK(rig.phone.writes.empty());
+  settle(rig, 2);
+  CHECK_EQ(rig.engine.status().current, 3000);
+}
+
+void pending_drag_is_not_overwritten() {
+  Rig rig(60.0f, curve_level(60.0f, kMax));
+  rig.ticks(30);
+  rig.phone.writes.clear();
+  drag(rig, 60.0f, 400.0f, 2500);
+  rig.front(5.0f);
+  rig.ticks(3);
+  CHECK(rig.phone.writes.empty());
+}
+
+void system_rewrites_are_not_learned() {
+  Rig rig(60.0f, curve_level(60.0f, kMax));
+  rig.ticks(30);
+  rig.phone.level = 4000;
+  rig.phone.settings.brightness = 200;
+  settle(rig, 12);
+  CHECK(rig.engine.status().last_learning == "none");
+  CHECK_EQ(rig.phone.saves, 0);
 }
 
 void learning_can_be_disabled() {
   Config config;
   config.learning_enabled = false;
   Rig rig(60.0f, curve_level(60.0f, kMax), config);
-  rig.ticks(11);
-  rig.phone.settings.brightness = 220;
-  rig.phone.user_drag = true;
-  rig.ticks(11);
-  CHECK_EQ(rig.phone.user_checks, 0);
-  CHECK_NEAR(rig.engine.user_offset(), 0.0, 1e-9);
+  rig.ticks(30);
+  drag(rig, 60.0f, 400.0f, 4000);
+  settle(rig, 3);
+  CHECK(rig.engine.status().last_learning == "disabled");
+  CHECK_EQ(user_anchors(rig.engine), 0);
+}
+
+void table_curve_is_followed_not_learned() {
+  const SystemCurve table({0, 30, 600, 5000}, {1, 83.13f, 126.14f, 678.4f}, PanelMap());
+  Rig rig(300.0f, 100, Config{}, table);
+  rig.ticks(30);
+  CHECK_EQ(rig.engine.status().target, table.level(table.nits(300.0f), kMax));
+  drag(rig, 300.0f, 400.0f, 4000);
+  CHECK(rig.engine.status().last_learning == "unsupported");
+  CHECK_EQ(rig.phone.saves, 0);
+}
+
+// A drag above the good curve (900 logical nits at 500 lux, good 421).
+Rig bright_drag() {
+  Rig rig(500.0f, curve_level(500.0f, kMax));
+  rig.ticks(30);
+  drag(rig, 500.0f, 900.0f, 8000);
+  settle(rig, 2);
+  CHECK(rig.engine.curve().controller().has_good_curve());
+  return rig;
+}
+
+void screen_off(Rig& rig, int64_t milliseconds, float wake_lux) {
+  rig.phone.power = 0;
+  rig.ticks(2);
+  rig.phone.elapsed += milliseconds;
+  rig.phone.power = 1;
+  rig.front(wake_lux);
+  rig.ticks(3);
+}
+
+void good_curve_after_long_screen_off() {
+  Rig rig = bright_drag();
+  screen_off(rig, 31 * 60 * 1000, 500.0f);
+  CHECK(!rig.engine.curve().controller().has_good_curve());
+  CHECK(rig.engine.status().last_learning == "good_curve");
+  CHECK_NEAR(rig.engine.curve().controller().logical(500.0f), 421.134, 1e-3);
+  CHECK(rig.phone.saved.find("good_curve=0") != std::string::npos);
+}
+
+void good_curve_needs_time_and_light_change() {
+  Rig short_off = bright_drag();
+  screen_off(short_off, 5 * 60 * 1000, 100.0f);
+  CHECK(short_off.engine.curve().controller().has_good_curve());
+  Rig same_light = bright_drag();
+  screen_off(same_light, 10 * 60 * 1000, 505.0f);
+  CHECK(same_light.engine.curve().controller().has_good_curve());
+  Rig changed = bright_drag();
+  screen_off(changed, 7 * 60 * 1000, 100.0f);
+  CHECK(!changed.engine.curve().controller().has_good_curve());
+
+  RefactorConfig config;
+  config.reset_policy = false;
+  Rig disabled(500.0f, curve_level(500.0f, kMax), Config{}, SystemCurve(config, PanelMap()));
+  disabled.ticks(30);
+  drag(disabled, 500.0f, 900.0f, 8000);
+  settle(disabled, 2);
+  screen_off(disabled, 60 * 60 * 1000, 500.0f);
+  CHECK(disabled.engine.curve().controller().has_good_curve());
 }
 
 void rear_sensor_takes_over_when_brighter() {
@@ -329,9 +490,14 @@ void reference_rear_fallback_without_dual_policy() {
 }
 
 void learning_reset() {
-  Rig rig(60.0f);
+  Rig rig(0.0f, 1);
+  rig.ticks(30);
+  drag(rig, 0.0f, 7.9595423f, 154);
+  settle(rig, 2);
   rig.engine.reset_learning();
-  CHECK_NEAR(rig.phone.saved_offset, 0.0, 1e-9);
+  CHECK_EQ(user_anchors(rig.engine), 0);
+  CHECK(rig.phone.saved.find("order=0\n") != std::string::npos);
+  CHECK_EQ(rig.engine.curve_level(0.0f), curve_level(0.0f, kMax));
 }
 
 }  // namespace
@@ -351,8 +517,16 @@ int main() {
   proximity_holds_brightness();
   night_and_low_battery_limits();
   stable_light_slows_polling();
-  learning_follows_reference_formula_only_for_drags();
+  dark_drag_is_learned_and_kept();
+  learning_follows_the_system_segments();
+  night_factor_applies_on_top();
+  learning_waits_for_the_ramp();
+  pending_drag_is_not_overwritten();
+  system_rewrites_are_not_learned();
   learning_can_be_disabled();
+  table_curve_is_followed_not_learned();
+  good_curve_after_long_screen_off();
+  good_curve_needs_time_and_light_change();
   rear_sensor_takes_over_when_brighter();
   rear_sensor_never_lowers_lux();
   reference_rear_fallback_without_dual_policy();

@@ -7,11 +7,11 @@
 <section><h2>运行状态</h2><div id="status" class="cards"></div>
 <div class="buttons"><button id="refresh">刷新状态</button><button id="startService">启动服务</button></div>
 <p>在管理器中禁用模块后服务会全部退出；重新启用后点击“启动服务”即可恢复，无需重启。首次安装仍需重启。</p></section>
-<section><h2>亮度曲线</h2><p>蓝线为 v6.8 预设曲线，橙线叠加了学习偏移，红点为当前平滑照度与输出。夜间（18:00–6:00）在此基础上降低 5%。</p>
+<section><h2>亮度曲线</h2><p>蓝线为系统默认亮度曲线（按本机系统配置计算），橙线为学习后的曲线，橙点为拖动点，红点为当前平滑照度与输出。夜间（18:00–6:00）在此基础上降低 5%，阳光模式另行提升。</p>
 <svg id="chart" viewBox="0 0 600 230" role="img" aria-label="亮度曲线"></svg><p id="chartNote"></p></section>
 <section><h2>亮度条学习</h2><p id="learning"></p>
-<p>与 v6.8 相同：拖动亮度条后，把“亮度条换算值与曲线目标之差”按 10% 并入整条曲线的统一偏移，上限 ±30%，重启后保留。只学习真实拖动，系统自动改写亮度条不计入。</p>
-<button id="learnReset" class="danger">清除学习偏移</button></section>
+<p>按 HyperOS 自己的规则学习：只认系统记录下的真实拖动，记下当时的环境光和亮度条位置（逻辑尼特）。环境光分为暗光、室内、户外三段，每段只保留最近一次拖动，所以最多记住 3 个点；拖动会带动所在段两端的锚点，并保证环境越亮亮度越高，和新拖动矛盾的旧点会被删掉。拖得比系统建议亮度更亮时，息屏 30 分钟，或息屏 6 分钟且环境光变化超过 20 lux 后，会回落到建议亮度。学习记录重启后保留。</p>
+<button id="learnReset" class="danger">清除学习记录</button></section>
 <section><h2>调光设置</h2><div id="controls"></div>
 <div class="buttons"><button id="save">保存并应用</button><button id="defaults">载入默认设置</button></div>
 <details><summary>原始配置</summary><textarea id="config" spellcheck="false" aria-label="原始配置"></textarea><button id="saveRaw">保存原始配置</button></details></section>

@@ -24,6 +24,7 @@ svg .base,svg .learned{fill:none;stroke-width:2.5}
 svg .base{stroke:#3879e5}
 svg .learned{stroke:#ec9c32}
 svg .point{fill:#d23b5d}
+svg .anchor{fill:#ec9c32}
 textarea{box-sizing:border-box;width:100%;min-height:280px;font:13px monospace;padding:12px;border:1px solid #c7d4e6;border-radius:8px;background:#f8faff;color:#253042}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.5}
 .field{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px 12px;margin:12px 0}

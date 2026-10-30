@@ -21,8 +21,9 @@ struct Config {
   float high_lux_boost_max = 0.35f;
   float high_lux_min_pct = 0.90f;
   int high_lux_duration_ms = 8000;
-  // Not in the reference: learning from slider drags, and the system dual
-  // light sensor policy (0 restores the reference rear-sensor fallback only).
+  // Not in the reference: learning slider drags into the system's anchors
+  // and the system dual light sensor policy (0 restores the reference
+  // rear-sensor fallback only).
   bool learning_enabled = true;
   bool dual_sensor = true;
 };

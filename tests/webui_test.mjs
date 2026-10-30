@@ -27,7 +27,9 @@ test('WebUI shows runtime, edits configuration, resets learning and starts the s
   const commands = [];
   const runtime = {ok: true, version: 'v8-test', mode: 'auto', screen_on: true, proximity_near: false, front_lux: 12.5, back_lux: 300,
     lux_source: 'rear', smoothed_lux: 120, target: 2400, current: 2300, max: 16383, poll_ms: 800, sunlight: false, battery: 70,
-    charging: false, slider: 42, user_offset: 0.05, last_learning: 'ignored_system_change'};
+    charging: false, slider: 42, learnable: true, last_learning: 'learned', good_curve: true,
+    anchors: [[0, 7.96, 1, 142], [30, 135, 0, 1374], [600, 220, 0, 2121], [5000, 1060, 0, 6552]],
+    curve: [[0.1, 142], [1, 152], [10, 391], [100, 1460]], default_curve: [[0.1, 33], [1, 47], [10, 391], [100, 1460]]};
   const verb = (command) => command.match(/control\.sh' '?([\w-]+)/)?.[1];
   const reply = (key, value) => window[key](0, typeof value === 'string' ? value : JSON.stringify(value), '');
   const window = {ksu: {exec(command, options, key) {
@@ -40,7 +42,7 @@ test('WebUI shows runtime, edits configuration, resets learning and starts the s
     }
     if (verb(command) === 'log-read') return reply(key, 'recent log');
     if (verb(command) === 'log-clear') return reply(key, {ok: true});
-    if (verb(command) === 'learn-reset') { runtime.user_offset = 0; return reply(key, {ok: true}); }
+    if (verb(command) === 'learn-reset') { runtime.anchors = runtime.anchors.map(([l, n, , v]) => [l, n, 0, v]); return reply(key, {ok: true}); }
     if (verb(command) === 'start') { startCalls++; const state = online ? 'already_running' : 'started'; online = true; return reply(key, {ok: true, state}); }
     if (verb(command) === 'status') return reply(key, online ? runtime : {ok: false, error: '服务未运行或无响应'});
     if (command.includes('check_status.sh')) return reply(key, 'diagnostics');
@@ -55,13 +57,17 @@ test('WebUI shows runtime, edits configuration, resets learning and starts the s
   assert.equal(elements.get('version').textContent, 'reF1nd · v8-test');
   assert.ok(texts('status').includes('后置（系统双光感策略）'));
   assert.ok(texts('status').includes('2400 / 2300'));
-  assert.match(elements.get('learning').textContent, /5\.00%/);
-  assert.match(elements.get('learning').textContent, /忽略了系统自动改写/);
+  assert.ok(texts('status').includes('HyperOS 逻辑尼特曲线'));
+  assert.match(elements.get('learning').textContent, /已记住 1\/3 个拖动点：0\.0 lux → 亮度条 8\.0 逻辑尼特（节点 142）/);
+  assert.match(elements.get('learning').textContent, /已记住一次拖动/);
+  assert.match(elements.get('learning').textContent, /息屏较久后会回落/);
+  assert.equal(elements.get('chart').children.filter((e) => e.attrs.class === 'anchor').length, 1);
   assert.equal(elements.get('chart').children.at(-1).tag, 'circle');
   assert.ok(elements.get('chart').children.some((e) => e.attrs.class === 'learned'));
+  assert.ok(elements.get('chart').children.some((e) => e.attrs.class === 'anchor'));
   assert.equal(elements.get('learning_enabled').type, 'checkbox');
   assert.equal(elements.get('learning_enabled').checked, true);
-  assert.equal(elements.get('manual_gamma').value, '2.7');
+  assert.ok(!elements.has('slider_range'));
 
   elements.get('alpha_fast').value = '0.6';
   elements.get('alpha_fast').listeners.input();

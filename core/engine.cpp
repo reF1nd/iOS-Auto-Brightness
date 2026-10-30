@@ -6,13 +6,14 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "curve.hpp"
-
 namespace iab {
 
 namespace {
 
 constexpr float kTrendSlopeFast = 50.0f;
+// AutomaticBrightnessControllerImpl.isNeedResetShortTermModel.
+constexpr int64_t kResetAfterMs = 1800000, kResetLightChangeAfterMs = 360000;
+constexpr float kResetLuxChange = 20.0f;
 
 bool night_hour(int hour) { return hour >= 18 || hour < 6; }
 
@@ -28,8 +29,10 @@ int clamp_level(int level, int max_level) {
 
 }  // namespace
 
-Engine::Engine(Platform& platform, const Config& config, int max_level, float user_offset)
-    : platform_(platform), config_(config), max_(max_level), user_offset_(user_offset) {}
+Engine::Engine(Platform& platform, const Config& config, int max_level, const SystemCurve& curve)
+    : platform_(platform), config_(config), max_(max_level), curve_(curve) {}
+
+void Engine::set_config(const Config& config) { config_ = config; }
 
 void Engine::log(const char* format, ...) {
   char line[512];
@@ -87,6 +90,7 @@ void Engine::apply_events(const std::vector<SensorEvent>& events) {
     switch (event.kind) {
       case SensorEvent::Kind::Front:
         front_lux_ = event.value;
+        fresh_front_ = true;
         dual_.push_main(event.time, event.value);
         break;
       case SensorEvent::Kind::Back:
@@ -138,11 +142,7 @@ float Engine::select_lux(int64_t now) {
   return dual_.assist_lux();
 }
 
-int Engine::apply_offset_and_limits(int level, int64_t now) {
-  if (std::fabs(user_offset_) >= 0.001f) {
-    const int sum = level + static_cast<int>(user_offset_ * static_cast<float>(max_));
-    level = sum < 1 ? 1 : (sum < max_ ? sum : max_);
-  }
+int Engine::apply_limits(int level, int64_t now) {
   if (night_hour(platform_.local_hour())) level = static_cast<int>(0.95f * static_cast<float>(level));
   refresh_battery(now);
   if (battery_ <= 14 && !charging_) {
@@ -163,37 +163,83 @@ void Engine::wake(int64_t now) {
   } else {
     lux = smoothed_;
   }
-  const int level = apply_offset_and_limits(curve_level(lux, max_), now);
+  const int level = apply_limits(curve_level(lux), now);
   platform_.write_level(clamp_level(level, max_));
   transition_.duration = 0;
   transition_.to = level;
   last_power_check_ = now;
   last_screen_ = screen_on_ = true;
   current_ = target_ = level;
+  reset_check_ = closed_at_ >= 0;
+  woke_at_ = now;
+  fresh_front_ = false;
 }
 
-void Engine::learn() {
-  const int slider = cached_slider_;
-  if (prev_slider_ >= 0 && std::abs(slider - prev_slider_) >= 10) {
-    // The framework rewrites screen_brightness while auto brightness runs;
-    // only a genuine drag also moves its short-term model point.
+// needResetShortTermModelPolicy on the first light reading after the screen
+// comes back: after 30 minutes off, or 6 minutes off with the light changed by
+// more than 20 lux, a drag above the good curve falls back to it.
+void Engine::check_good_curve(float lux) {
+  reset_check_ = false;
+  const int64_t off = platform_.elapsed_ms() - closed_at_;
+  if (!curve_.learnable() || !curve_.controller().config().reset_policy) return;
+  if (!(off >= kResetAfterMs || (std::fabs(lux - closed_lux_) > kResetLuxChange && off >= kResetLightChangeAfterMs))) {
+    return;
+  }
+  if (!curve_.controller().use_good_curve()) return;
+  platform_.save_learning(curve_.controller().serialize());
+  last_learning_ = "good_curve";
+  log("Learn: good curve after %llds off (%.1f -> %.1f lux)", static_cast<long long>(off / 1000), closed_lux_, lux);
+}
+
+void Engine::check_learning(int64_t now) {
+  if (mode_ != 1 || !screen_on_) {
+    learn_pending_ = false;
+    return;
+  }
+  // Only a slider drag in auto mode reaches updateLogicalCurve; the framework
+  // rewrites screen_brightness on its own all the time.
+  float lux = 0.0f, logical = 0.0f;
+  if (platform_.user_drag(lux, logical)) {
     if (!config_.learning_enabled) {
       last_learning_ = "disabled";
-    } else if (!platform_.user_adjusted()) {
-      last_learning_ = "ignored_system_change";
-    } else {
-      const int reference = slider_level(slider, config_.manual_gamma, max_);
-      float offset = user_offset_ * 0.9f +
-                     static_cast<float>(reference - target_) / static_cast<float>(max_) * 0.1f;
-      if (offset > 0.3f) offset = 0.3f;
-      if (offset < -0.3f) offset = -0.3f;
-      user_offset_ = offset;
-      platform_.save_learning(user_offset_);
-      log("Learn: offset=%.3f (slider %d→%d)", user_offset_, prev_slider_, slider);
-      last_learning_ = "learned";
+      return;
     }
+    if (!curve_.learnable()) {
+      last_learning_ = "unsupported";
+      return;
+    }
+    NitController& controller = curve_.controller();
+    controller.drag(lux, logical);
+    platform_.save_learning(controller.serialize());
+    std::string anchors;
+    for (const Anchor& anchor : controller.anchors()) {
+      char item[48];
+      std::snprintf(item, sizeof item, "%s(%.1f,%.1f%s)", anchors.empty() ? "" : " ", anchor.lux, anchor.nit,
+                    anchor.user ? ",user" : "");
+      anchors += item;
+    }
+    log("Learn: %.1f lux -> %.2f logical nits%s anchors=%s", controller.user_lux(), logical,
+        controller.has_good_curve() ? " (above good curve)" : "", anchors.c_str());
+    last_learning_ = "learned";
+    // The system shows the dragged level; leave it until the panel settles.
+    learn_pending_ = true;
+    learn_since_ = now;
+    learn_level_ = platform_.read_level();
+    return;
   }
-  prev_slider_ = slider;
+  if (!learn_pending_) return;
+  const int level = platform_.read_level();
+  if (level != learn_level_ && now - learn_since_ < 10000) {
+    learn_level_ = level;
+    return;
+  }
+  if (now - learn_since_ < 1000) return;
+  learn_pending_ = false;
+  // Continue from what the panel shows instead of easing from our last write.
+  if (level >= 1) {
+    current_ = level;
+    transition_ = {level, level, now, 0};
+  }
 }
 
 void Engine::tick(int64_t now) {
@@ -201,7 +247,7 @@ void Engine::tick(int64_t now) {
   const bool automatic = cached_auto_ != 0;
   if (static_cast<int>(automatic) != mode_) {
     log("Mode: %s", automatic ? "AUTO" : "MANUAL");
-    prev_slider_ = -1;
+    learn_pending_ = false;
     if (automatic) {
       platform_.set_system_writable(false);
       enable_sensors();
@@ -231,6 +277,10 @@ void Engine::tick(int64_t now) {
     if (on != last_screen_) {
       log("Screen: %s", on ? "ON" : "OFF");
       last_screen_ = screen_on_ = on;
+      if (!on) {
+        closed_at_ = platform_.elapsed_ms();
+        closed_lux_ = smoothed_;
+      }
       if (automatic && on) {
         wake(now);
         return;
@@ -259,6 +309,9 @@ void Engine::tick(int64_t now) {
 
   const float lux = select_lux(now);
   input_lux_ = lux;
+  if (reset_check_ && ((fresh_front_ && lux >= 0.0f) || now - woke_at_ >= 5000)) {
+    check_good_curve(lux >= 0.0f ? lux : smoothed_);
+  }
   if (lux >= 0.0f) {
     fast_dark_ = false;
     const float p1 = lux_prev1_, p2 = lux_prev2_;
@@ -313,9 +366,8 @@ void Engine::tick(int64_t now) {
     smoothed_ = std::fmaf(alpha_, filtered_, smoothed_ * (1.0f - alpha_));
     if (smoothed_ < 0.0f) smoothed_ = 0.0f;
   }
-  int target = curve_level(smoothed_, max_);
-  nits_ = smoothed_ > 0.0f ? nits_for_lux(smoothed_) : 0.222f;
-  target = apply_offset_and_limits(target, now);
+  nits_ = curve_.nits(smoothed_);
+  int target = apply_limits(curve_.level(nits_, max_), now);
 
   const float threshold = config_.high_lux_threshold;
   if (threshold > 0.0f) {
@@ -430,7 +482,8 @@ void Engine::tick(int64_t now) {
       level = clamp_level(level, max_);
     }
   }
-  if (level != current_) {
+  // While a drag settles the panel shows the user's choice; do not overwrite it.
+  if (level != current_ && !learn_pending_) {
     if (level > current_) ++bright_count_;
     else ++dark_count_;
     platform_.write_level(clamp_level(level, max_));
@@ -438,7 +491,6 @@ void Engine::tick(int64_t now) {
   }
   target_ = target;
 
-  learn();
   if (std::fabs(filtered_ - last_stable_lux_) < 0.5f) {
     ++stable_count_;
   } else {
@@ -465,15 +517,16 @@ void Engine::tick(int64_t now) {
 }
 
 void Engine::reset_learning() {
-  user_offset_ = 0.0f;
-  platform_.save_learning(user_offset_);
+  curve_.controller().reset();
+  learn_pending_ = false;
+  platform_.save_learning(curve_.controller().serialize());
   last_learning_ = "reset";
-  log("Learn: offset reset");
+  log("Learn: reset");
 }
 
 void Engine::shutdown() {
   platform_.set_system_writable(true);
-  platform_.save_learning(user_offset_);
+  platform_.save_learning(curve_.controller().serialize());
   log("Stopped (bright:%d dark:%d 阳光:%d)", bright_count_, dark_count_, sunlight_count_);
 }
 
@@ -492,7 +545,6 @@ EngineStatus Engine::status() const {
   s.smoothed_lux = smoothed_;
   s.alpha = alpha_;
   s.nits = nits_;
-  s.user_offset = user_offset_;
   s.target = target_;
   s.current = current_;
   s.poll_ms = poll_ms_;

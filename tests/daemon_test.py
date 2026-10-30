@@ -27,6 +27,16 @@ def settings_xml(mode, brightness):
             "</settings>\n")
 
 
+def dumpsys(lux, logical, anchors):
+    """dumpsys display: the AOSP default curve and RefactorNitController of both displays."""
+    text = ("  mConfig=BrightnessConfiguration{[(0.0, 1.0), (30.0, 83.13), (600.0, 126.14), (5000.0, 678.4)], {}, ''}\n\n"
+            "Refactor Nit Controller Configuration:\n  mDisplayId=0\n  mIsHaveGoodCurve=false\n"
+            f"  mUserLux={lux}\n  mUserLogicalNit={logical}\n"
+            f"  anchors=[{anchors}]\n\n"
+            "Refactor Nit Controller Configuration:\n  mDisplayId=1\n  mUserLux=5.0\n  mUserLogicalNit=9.0\n")
+    return "#!/bin/sh\ncat <<'EOF'\n" + text + "EOF\n"
+
+
 def wait_for(predicate, timeout, message):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -79,9 +89,13 @@ def main():
         write(root / 'sys/class/thermal/thermal_zone0/type', 'battery\n')
         write(root / 'sys/class/thermal/thermal_zone0/temp', '30000\n')
         write(state / 'config.conf', (ROOT / 'module/default.conf').read_text())
-        write(state / 'learn.conf', 'user_offset=0.050000\n')
-        write(bin_dir / 'dumpsys', '#!/bin/sh\necho "    mUserLux=-1.0"\necho "    mUserBrightness=NaN"\n')
+        write(state / 'learn.conf', 'user_offset=0.050000\nanchor=10.000 50.0000 1793000000\n')
+        # The framework holds a dark drag from before the module started.
+        dark = '(0.0,7.9595423,user), (30.0,135.0,def), (600.0,220.0,def), (5000.0,1060.0,def)'
+        write(bin_dir / 'dumpsys', dumpsys(0.0, 7.9595423, dark))
         write(bin_dir / 'getprop', '#!/bin/sh\n')
+        write(bin_dir / 'pm', '#!/bin/sh\n')
+        write(bin_dir / 'cmd', '#!/bin/sh\ncase "$2" in lookup) echo true ;; list) echo com.miui.rom ;; esac\n')
         for tool in bin_dir.iterdir():
             tool.chmod(0o755)
         env = dict(os.environ, IAB_SYSROOT=str(root), PATH=f'{bin_dir}:{os.environ["PATH"]}')
@@ -92,7 +106,11 @@ def main():
             first = status(process, state)
             assert first['ok'] and first['max'] == 16383, first
             assert first['lux_source'] == 'fallback' and first['settings'] == 'ok', first
-            assert abs(first['user_offset'] - 0.05) < 1e-6, first
+            assert first['curve_source'] == 'RefactorNitController' and first['learnable'], first
+            # The earlier learn.conf is not used; the framework's anchors are taken over.
+            assert [a[:3] for a in first['anchors']] == [[0, 7.96, 1], [30, 135, 0], [600, 220, 0], [5000, 1060, 0]], first
+            assert len(first['curve']) == 31 and first['curve'] != first['default_curve'], first
+            assert 'anchor=0 7.959542' in (state / 'learn.conf').read_text()
             assert stat.S_IMODE((panel / 'brightness').stat().st_mode) == 0o444
             second = locked = None
 
@@ -106,7 +124,7 @@ def main():
 
             def followed():
                 current = int((panel / 'brightness').read_text())
-                return current > 6000 and current
+                return current > 3000 and current
             locked = wait_for(followed, 30, 'brightness did not follow brighter light')
             third = status(process, state)
             assert third['current'] == locked, (third, locked)
@@ -115,8 +133,36 @@ def main():
                                      stderr=subprocess.STDOUT, text=True)
             assert other.wait(10) == 1 and 'core.lock' in other.stdout.read()
 
+            # A drag: RefactorNitController learns it, the framework persists
+            # the slider and shows the chosen level on the panel.
+            wait_for(lambda: status(process, state)['poll_ms'] >= 1600, 30, 'brightness did not settle')
+            chosen = int((panel / 'brightness').read_text()) + 1500
+            write(bin_dir / 'dumpsys', dumpsys(3000.0, 500.0, dark))
+            (panel / 'brightness').chmod(0o644)
+            write(panel / 'brightness', f'{chosen}\n')
+            (panel / 'brightness').chmod(0o444)
+            write(settings, settings_xml(1, 120))
+            wait_for(lambda: 'anchor=3000 500 2 1\n' in (state / 'learn.conf').read_text(), 15, 'drag not learned')
+            learned = status(process, state)
+            assert learned['last_learning'] == 'learned', learned
+            assert learned['user_lux'] == 3000.0 and learned['user_logical'] == 500.0, learned
+            dragged = [a for a in learned['anchors'] if a[2]]
+            assert [a[:2] for a in dragged] == [[0, 7.96], [3000.0, 500.0]], learned
+            assert learned['curve'] != learned['default_curve'], learned
+            # The dragged level stays until the panel settles, then the curve
+            # through the anchor (x0.95 between 18:00 and 06:00) takes over.
+            assert int((panel / 'brightness').read_text()) == chosen
+            night = learned['local_hour'] >= 18 or learned['local_hour'] < 6
+            expected = int(dragged[1][3] * (0.95 if night else 1.0))
+
+            def through_anchor():
+                now = status(process, state)
+                # The smoothed lux is still creeping up to 3000 at the slow rate.
+                return abs(now['target'] - expected) <= expected * 0.08 and now['current'] == now['target'] and now
+            wait_for(through_anchor, 30, 'curve did not follow the learned anchor')
+
             process.send_signal(signal.SIGUSR1)
-            wait_for(lambda: 'user_offset=0.000000' in (state / 'learn.conf').read_text(), 5,
+            wait_for(lambda: 'order=0\nuser=-1 -1\n' in (state / 'learn.conf').read_text(), 5,
                      'learning reset not saved')
 
             settings.write_text(settings_xml(0, 100))
@@ -142,7 +188,11 @@ def main():
                 process.wait()
             log.close()
         text = (base / 'daemon.log').read_text()
-        for needle in ('Fallback(sysfs)', 'Mode: AUTO', 'Mode: MANUAL', 'Learn: offset reset', 'Stopped'):
+        for needle in ('Fallback(sysfs)', 'Mode: AUTO', 'Mode: MANUAL', 'Learn: reset', 'Stopped',
+                       'Learn: earlier learn.conf', 'Learn: took over 1 dragged anchors from the system',
+                       'framework-ext-res.apk: cannot open; using the altdb values',
+                       'Curve check: defaults vs BrightnessConfiguration max 0.2% at 30 lux',
+                       'Learn: 3000.0 lux -> 500.00 logical nits'):
             assert needle in text, (needle, text)
     print('daemon_end_to_end: ok')
 

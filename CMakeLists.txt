@@ -14,11 +14,14 @@ string(REPLACE "version=" "" IAB_VERSION "${IAB_VERSION_LINE}")
 set(IAB_WARNINGS -Wall -Wextra -Wpedantic -Werror -ffp-contract=off)
 
 add_library(brightness_core
+  core/android_resources.cpp
+  core/brightness_map.cpp
   core/config.cpp
-  core/curve.cpp
   core/dual_sensor.cpp
   core/engine.cpp
-  core/settings_reader.cpp)
+  core/nit_controller.cpp
+  core/settings_reader.cpp
+  core/system_curve.cpp)
 target_include_directories(brightness_core PUBLIC core)
 target_compile_options(brightness_core PRIVATE ${IAB_WARNINGS})
 
@@ -31,7 +34,7 @@ if(ANDROID)
 endif()
 
 if(BUILD_TESTING)
-  foreach(name curve_tests engine_tests dual_sensor_tests settings_tests)
+  foreach(name engine_tests dual_sensor_tests nit_controller_tests brightness_map_tests android_resources_tests settings_tests)
     add_executable(${name} tests/${name}.cpp)
     target_link_libraries(${name} PRIVATE brightness_core)
     target_compile_options(${name} PRIVATE ${IAB_WARNINGS})

@@ -81,8 +81,7 @@ case "$1" in
     if pid=$(core_pid); then
       kill -USR1 "$pid" 2>/dev/null
     else
-      umask 077
-      echo 'user_offset=0.000000' > "$STATE/learn.conf"
+      rm -f "$STATE/learn.conf"
     fi
     echo '{"ok":true}'
     exit 0 ;;

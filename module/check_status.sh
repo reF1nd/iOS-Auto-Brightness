@@ -10,8 +10,8 @@ for f in supervisor.pid daemon.pid; do printf '%s: %s\n' "$f" "$(cat "$STATE/$f"
 [ ! -e "$STATE/stop" ] || echo 'Stop requested for this boot'
 echo 'Config validation:'
 "$MODDIR/bin/ios_brightness_daemon" --validate-config < "$STATE/config.conf"
-echo 'Learning offset:'
-cat "$STATE/learn.conf" 2>/dev/null || echo 'user_offset=0 (no file)'
+echo 'Learning anchors:'
+cat "$STATE/learn.conf" 2>/dev/null || echo '(no learn.conf: system default anchors)'
 echo 'System mode / slider:'
 settings get system screen_brightness_mode
 settings get system screen_brightness
