@@ -809,6 +809,39 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
   rename(temporary.c_str(), path.c_str());
 }
 
+// The root manager lists module.prop's description; lead it with "[state] ".
+// service.sh writes the states without a core in the same form.
+void show_state(const std::string& prop, const std::string& state) {
+  static std::string shown;
+  if (prop.empty() || state == shown) return;
+  std::string text;
+  // module.prop is a few hundred bytes; a full buffer means it would be cut.
+  if (!read_text(prop, text, 4096) || text.size() >= 4095) return;
+  const size_t at = text.compare(0, 12, "description=") == 0 ? 0 : text.find("\ndescription=");
+  if (at == std::string::npos) return;
+  const size_t value = text.find('=', at) + 1;
+  const size_t end = std::min(text.find('\n', value), text.size());
+  std::string base = text.substr(value, end - value);
+  if (base.compare(0, 1, "[") == 0 && base.find("] ") != std::string::npos) base.erase(0, base.find("] ") + 2);
+  text.replace(value, end - value, "[" + state + "] " + base);
+  const std::string temporary = prop + ".tmp";
+  FILE* file = std::fopen(temporary.c_str(), "w" IAB_CLOEXEC);
+  if (!file) return;
+  const bool ok = std::fwrite(text.data(), 1, text.size(), file) == text.size();
+  if (std::fclose(file) == 0 && ok && chmod(temporary.c_str(), 0644) == 0 && rename(temporary.c_str(), prop.c_str()) == 0) {
+    shown = state;
+  } else {
+    unlink(temporary.c_str());
+  }
+}
+
+std::string running_state(const iab::EngineStatus& s, const AndroidPlatform& platform, bool zygisk_off) {
+  if (zygisk_off) return "⚠️ 运行中 · Zygisk 已停用，重装模块可恢复";
+  if (!s.automatic) return "✅ 运行中 · 手动亮度，不接管";
+  return std::string("✅ 运行中 · 自动亮度 · ") +
+         (std::strcmp(platform.link_status(), "zygisk") == 0 ? "Zygisk 联动" : "dumpsys 轮询");
+}
+
 struct Range {
   const char* key;
   float minimum, maximum;
@@ -893,7 +926,7 @@ void log_link(unsigned events, const iab::SystemLink& link, int& rejected) {
   }
 }
 
-int run(const std::string& state) {
+int run(const std::string& state, const std::string& prop) {
   g_state_dir = state;
   const std::string config_path = state + "/config.conf";
   const std::string lock_path = state + "/core.lock";
@@ -919,7 +952,7 @@ int run(const std::string& state) {
     if (file) std::fprintf(file, "%s\n", backlight.c_str()), std::fclose(file);
   }
   char text[256];
-  std::snprintf(text, sizeof text, "iOS Brightness %s (v6.8 control loop, system curve) | %s | Max: %d", IAB_VERSION,
+  std::snprintf(text, sizeof text, "iOS Brightness %s (system curve) | %s | Max: %d", IAB_VERSION,
                 backlight.c_str(), max_level);
   log_line(text);
   std::snprintf(text, sizeof text, "阳光模式: threshold=%.0f boost_max=%.0f%% min=%.0f%% duration=%dms",
@@ -941,6 +974,7 @@ int run(const std::string& state) {
     panel = iab::PanelMap();
   }
   iab::SystemCurve curve = load_system_curve(dump, panel);
+  const bool zygisk_off = access((state + "/zygisk.disabled").c_str(), F_OK) == 0;
   const std::string curve_source = !curve.learnable() ? "BrightnessConfiguration" : "RefactorNitController";
   {
     std::string saved;
@@ -952,7 +986,7 @@ int run(const std::string& state) {
         std::snprintf(text, sizeof text, "Learn: %d dragged anchors restored%s", controller.user_anchors(),
                       controller.has_good_curve() ? " (good curve pending)" : "");
       } else if (saved.find("version=2") == std::string::npos) {
-        std::snprintf(text, sizeof text, "Learn: earlier learn.conf (v6.8 offset or beta points) is not used");
+        std::snprintf(text, sizeof text, "Learn: learn.conf of an older format is not used");
       } else {
         std::snprintf(text, sizeof text, "Learn: learn.conf was made for other default anchors; starting over");
       }
@@ -975,7 +1009,7 @@ int run(const std::string& state) {
                     : "Learn: the system holds other anchors and writes its own curve in between "
                       "(Zygisk restore not active)");
     }
-    if (access((state + "/zygisk.disabled").c_str(), F_OK) == 0) {
+    if (zygisk_off) {
       log_line("Zygisk: anchor restore stopped after system_server restarted repeatedly; install the module "
                "again to re-enable it");
     }
@@ -1041,6 +1075,7 @@ int run(const std::string& state) {
       g_dump_status = 0;
       write_status(engine, platform, config, backlight, curve_source, started, monotonic_ms());
     }
+    show_state(prop, running_state(engine.status(), platform, zygisk_off));
     const int64_t remaining = engine.poll_ms() - (monotonic_ms() - last_tick);
     if (remaining > 0 && g_run && !g_dump_status) wait_for(link, std::min<int64_t>(remaining, 1000));
     const unsigned events = link.service();
@@ -1066,7 +1101,10 @@ int main(int argc, char** argv) {
     std::printf("%s\n", IAB_VERSION);
     return 0;
   }
-  if (argc == 3 && std::strcmp(argv[1], "--state") == 0) return run(argv[2]);
-  std::fprintf(stderr, "usage: %s --state DIR | --validate-config | --version\n", argv[0]);
+  if (argc == 3 && std::strcmp(argv[1], "--state") == 0) return run(argv[2], "");
+  if (argc == 5 && std::strcmp(argv[1], "--state") == 0 && std::strcmp(argv[3], "--module-prop") == 0) {
+    return run(argv[2], argv[4]);
+  }
+  std::fprintf(stderr, "usage: %s --state DIR [--module-prop FILE] | --validate-config | --version\n", argv[0]);
   return 2;
 }

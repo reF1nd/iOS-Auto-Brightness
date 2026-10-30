@@ -100,7 +100,17 @@ def main():
             tool.chmod(0o755)
         env = dict(os.environ, IAB_SYSROOT=str(root), PATH=f'{bin_dir}:{os.environ["PATH"]}')
         log = (base / 'daemon.log').open('w')
-        process = subprocess.Popen([DAEMON, '--state', str(state)], env=env, stdout=log, stderr=subprocess.STDOUT)
+        prop = base / 'module.prop'
+        shipped = (ROOT / 'module/module.prop').read_text()
+        prop.write_text(shipped.replace('description=', 'description=[⏳ 重启后生效] '))
+
+        def shown():
+            line = next(line for line in prop.read_text().splitlines() if line.startswith('description='))
+            state, _, rest = line[len('description=['):].partition('] ')
+            assert 'description=' + rest in shipped.splitlines(), line
+            return state
+        process = subprocess.Popen([DAEMON, '--state', str(state), '--module-prop', str(prop)], env=env, stdout=log,
+                                   stderr=subprocess.STDOUT)
         try:
             wait_for(lambda: (state / 'daemon.pid').exists(), 15, 'daemon did not start')
             first = status(process, state)
@@ -119,6 +129,9 @@ def main():
                 second = status(process, state)
                 return second['heartbeat_ms'] > first['heartbeat_ms'] and second['mode'] == 'auto'
             wait_for(advanced, 5, 'heartbeat did not advance')
+            # The root manager's module list leads the description with the state.
+            wait_for(lambda: shown() == '✅ 运行中 · 自动亮度 · dumpsys 轮询', 5, 'running state not shown')
+            assert stat.S_IMODE(prop.stat().st_mode) == 0o644 and prop.read_text().count('\n') == shipped.count('\n')
 
             lux.write_text('3000.0\n')
 
@@ -169,6 +182,7 @@ def main():
             wait_for(lambda: stat.S_IMODE((panel / 'brightness').stat().st_mode) == 0o644, 15,
                      'manual mode did not release the node')
             assert status(process, state)['mode'] == 'manual'
+            wait_for(lambda: shown() == '✅ 运行中 · 手动亮度，不接管', 5, 'manual state not shown')
             settings.write_text(settings_xml(1, 100))
             wait_for(lambda: stat.S_IMODE((panel / 'brightness').stat().st_mode) == 0o444, 15,
                      'auto mode did not lock the node again')
@@ -189,7 +203,7 @@ def main():
             log.close()
         text = (base / 'daemon.log').read_text()
         for needle in ('Fallback(sysfs)', 'Mode: AUTO', 'Mode: MANUAL', 'Learn: reset', 'Stopped',
-                       'Learn: earlier learn.conf', 'Learn: took over 1 dragged anchors from the system',
+                       'Learn: learn.conf of an older format is not used', 'Learn: took over 1 dragged anchors from the system',
                        'framework-ext-res.apk: cannot open; using the altdb values',
                        'Curve check: defaults vs BrightnessConfiguration max 0.2% at 30 lux',
                        'Learn: 3000.0 lux -> 500.00 logical nits'):

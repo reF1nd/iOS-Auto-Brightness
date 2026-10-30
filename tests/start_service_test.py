@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import tempfile
 import time
@@ -145,21 +146,61 @@ else echo '{{"ready":false}}'; fi
         self.boot.write_text('boot-B\n')
         self.assertTrue(self.result()['ok'])
 
-    def test_service_refuses_first_install_before_reboot(self):
-        # The real boot script stops at its guard, before the native core starts.
-        real = self.root / 'real'
-        real.mkdir()
+    def real_service(self, daemon='exit 0'):
+        """The real boot script beside a module.prop, with the given core."""
+        real = self.mod.parent / 'real'
+        (real / 'bin').mkdir(parents=True, exist_ok=True)
+        (real / 'default.conf').write_text(Path('module/default.conf').read_text())
         (real / 'process-group.sh').write_text('iab_detach_cgroups() { :; }\n')
+        (real / 'module.prop').write_text(Path('module/module.prop').read_text())
+        (real / 'bin/ios_brightness_daemon').write_text('#!/bin/sh\n' + daemon + '\n')
+        (real / 'bin/ios_brightness_daemon').chmod(0o755)
         (real / 'service.sh').write_text(Path('module/service.sh').read_text()
                                          .replace('/data/adb/ios_auto_brightness', str(self.state))
+                                         .replace('/data/adb/modules', str(self.mod.parent))
                                          .replace('/proc/sys/kernel/random/boot_id', str(self.boot)))
+        return real
+
+    def run_service(self, real, **kwargs):
+        return subprocess.Popen(['bash', '-c', 'export IAB_SHELL_READY=$$; exec bash "$1"', 'fixture', str(real / 'service.sh')],
+                                env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
+
+    def description(self, real):
+        lines = [line for line in (real / 'module.prop').read_text().splitlines() if line.startswith('description=')]
+        self.assertEqual(len(lines), 1)
+        base = [line for line in Path('module/module.prop').read_text().splitlines() if line.startswith('description=')][0]
+        state, _, rest = lines[0][len('description=['):].partition('] ')
+        self.assertEqual('description=' + rest, base)
+        return state
+
+    def test_service_refuses_first_install_before_reboot(self):
+        # The real boot script stops at its guard, before the native core starts.
+        real = self.real_service()
         (self.state / 'activated-boot').unlink()
         (self.state / 'first-install-boot').write_text('boot-A\n')
-        result = subprocess.run(['bash', '-c', 'export IAB_SHELL_READY=$$; exec bash "$1"', 'fixture', str(real / 'service.sh')],
-                                env=self.env, capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for _ in range(2):
+            _, err = self.run_service(real).communicate(timeout=5)
+            self.assertEqual(self.description(real), '⏳ 重启后生效', err)
         self.assertFalse((self.state / 'activated-boot').exists())
         self.assertIn('awaiting reboot', (self.state / 'service.log').read_text())
+        self.assertEqual(stat.S_IMODE((real / 'module.prop').stat().st_mode), 0o644)
+
+    def test_service_shows_its_state(self):
+        (self.mod.parent / 'autobrightness').mkdir()
+        real = self.real_service()
+        self.run_service(real).communicate(timeout=5)
+        self.assertEqual(self.description(real), '❌ 与模块 autobrightness 冲突，未启动')
+        (self.mod.parent / 'autobrightness/disable').touch()
+        # A core that keeps running until the WebUI stops it.
+        real = self.real_service(f'touch {shlex.quote(str(self.state / "core"))}; while :; do sleep 0.1; done')
+        service = self.run_service(real)
+        deadline = time.monotonic() + 5
+        while not (self.state / 'core').exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue((self.state / 'core').exists())
+        (self.state / 'stop').touch()
+        service.communicate(timeout=10)
+        self.assertEqual(self.description(real), '⏸️ 已停止，可在 WebUI 中重新启动')
 
     def test_unknown_install_and_conflict(self):
         (self.state / 'activated-boot').unlink()

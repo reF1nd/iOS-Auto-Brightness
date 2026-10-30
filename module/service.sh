@@ -32,6 +32,16 @@ flock -n 9 || exit 0
 LOG="$STATE/service.log"
 DAEMON="$MODDIR/bin/ios_brightness_daemon"
 CORE_PID=
+END_STATE='⏸️ 已停止'
+# The root manager lists module.prop's description; lead it with "[state] "
+# like the core does while it runs.
+show_state() {
+  prop="$MODDIR/module.prop"
+  [ -f "$prop" ] && [ ! -L "$prop" ] || return 0
+  awk -v state="$1" '/^description=/ { sub(/^description=/, ""); sub(/^\[[^]]*\] /, ""); $0 = "description=[" state "] " $0 } { print }' \
+    "$prop" > "$prop.tmp" || { rm -f "$prop.tmp"; return 0; }
+  if cmp -s "$prop" "$prop.tmp"; then rm -f "$prop.tmp"; else chmod 0644 "$prop.tmp" && mv -f "$prop.tmp" "$prop"; fi
+}
 # The core restores 0644 itself; this also covers a crashed or killed core.
 release_node() {
   node=$(cat "$STATE/backlight" 2>/dev/null)
@@ -44,11 +54,14 @@ cleanup() {
     wait "$CORE_PID" 2>/dev/null
   fi
   release_node
+  [ ! -f "$STATE/stop" ] || END_STATE='⏸️ 已停止，可在 WebUI 中重新启动'
+  show_state "$END_STATE"
   rm -f "$STATE/supervisor.pid"
 }
 trap cleanup EXIT
 trap 'exit 0' HUP INT TERM
 printf '%s\n' "$$" > "$STATE/supervisor.pid"
+show_state '⏳ 等待开机完成'
 while [ "$(getprop sys.boot_completed)" != 1 ]; do
   [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || exit 0
   sleep 2
@@ -58,6 +71,7 @@ boot_id=$(cat /proc/sys/kernel/random/boot_id) || exit 1
 [ -n "$boot_id" ] || exit 1
 if [ "$(cat "$STATE/first-install-boot" 2>/dev/null)" = "$boot_id" ]; then
   echo 'First install is awaiting reboot; refusing premature service activation' >> "$LOG"
+  END_STATE='⏳ 重启后生效'
   exit 0
 fi
 printf '%s\n' "$boot_id" > "$STATE/activated-boot"
@@ -65,6 +79,7 @@ for id in autobrightness LiveDisplay lux-brightness adaptive-brightness brightne
   other="/data/adb/modules/$id"
   if [ -d "$other" ] && [ ! -f "$other/disable" ] && [ ! -f "$other/remove" ]; then
     echo "Conflict with enabled module: $id; not starting" >> "$LOG"
+    END_STATE="❌ 与模块 $id 冲突，未启动"
     exit 1
   fi
 done
@@ -90,7 +105,7 @@ rotate() (
 )
 failures=0
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] && [ ! -f "$STATE/stop" ]; do
-  "$DAEMON" --state "$STATE" >> "$LOG" 2>&1 &
+  "$DAEMON" --state "$STATE" --module-prop "$MODDIR/module.prop" >> "$LOG" 2>&1 &
   CORE_PID=$!
   elapsed=0
   while kill -0 "$CORE_PID" 2>/dev/null; do
@@ -103,6 +118,11 @@ while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] && [ ! -f "$STATE/
   CORE_PID=
   release_node
   if [ "$elapsed" -ge 60 ]; then failures=0; else failures=$((failures + 1)); fi
-  [ "$failures" -lt 5 ] || { echo 'Repeated startup failure; leaving display with system' >> "$LOG"; exit 1; }
+  if [ "$failures" -ge 5 ]; then
+    echo 'Repeated startup failure; leaving display with system' >> "$LOG"
+    END_STATE='❌ 多次启动失败，亮度已交还系统'
+    exit 1
+  fi
+  [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ] || [ -f "$STATE/stop" ] || show_state '⚠️ 核心意外退出，正在重启'
   sleep 5
 done

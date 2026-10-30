@@ -3,4 +3,4 @@ name=iOS Auto Brightness
 version=v8.0.0-beta.2
 versionCode=80002
 author=reF1nd
-description=Open-source rewrite of the v6.8 auto brightness daemon with the HyperOS dual light sensor policy. Android 12+ / KernelSU, APatch and Magisk.
+description=iOS 风格的自动亮度，曲线与学习跟随 HyperOS
