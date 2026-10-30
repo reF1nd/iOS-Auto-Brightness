@@ -250,6 +250,54 @@ esac
         self.assertTrue(list((self.state / 'updates').glob('txn.*/failed-stage')))
         self.assertEqual((self.state / 'learning-0.dat').read_text(), 'preserve learning-0.dat')
 
+    def activate(self):
+        return subprocess.run(['bash', '-c', 'export IAB_UPDATE_SHELL_READY=$$; exec "$@"', 'fixture'] + SHELL +
+                              [str(self.script), 'activate'],
+                              env=self.env, cwd=self.active, capture_output=True, text=True, timeout=40)
+
+    def test_native_hot_install_hands_over_the_service(self):
+        # KernelSU moved the old directory away; its service still runs from there.
+        old = self.root / 'old-module'
+        self.tree(old, 'old')
+        self.tree(self.active, 'new')
+        (self.state / 'activated-boot').write_text('boot-A')
+        child = subprocess.Popen(['bash', str(old / 'service.sh')], env=self.env,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.children.append(child)
+        self.wait_for(lambda: (self.state / 'running').exists())
+        result = self.activate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Hot install complete', result.stdout)
+        self.assertEqual(child.wait(timeout=5), 0)
+        self.assertEqual((self.state / 'running').read_text(), 'new')
+        self.assertEqual((self.state / 'update-status').read_text().strip(), 'ready')
+        self.assertFalse((self.active / 'update').exists())
+        self.assertFalse((self.state / 'leaked-update-lock').exists())
+        self.shell('exec 8>"$HOT_STATE/update.lock"; flock -n 8')
+
+    def test_native_hot_install_starts_a_first_install(self):
+        self.tree(self.active, 'new')
+        (self.state / 'first-install-boot').write_text('boot-A\n')
+        result = self.activate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.state / 'first-install-boot').exists())
+        self.assertEqual((self.state / 'running').read_text(), 'new')
+
+    def test_native_hot_install_reports_failures(self):
+        self.tree(self.active, 'new')
+        (self.state / 'fail-ready').touch()
+        result = self.activate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('health unconfirmed', result.stdout)
+        (self.state / 'stop').touch()
+        self.wait_for(lambda: not (self.state / 'running').exists())
+        (self.state / 'fail-ready').unlink()
+        (self.active / 'disable').touch()
+        result = self.activate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('disabled', result.stdout)
+        self.assertFalse((self.state / 'running').exists())
+
     def test_service_refuses_first_install_before_reboot(self):
         # Run the actual service through its guard, before the native core starts.
         path = self.root / 'service.sh'

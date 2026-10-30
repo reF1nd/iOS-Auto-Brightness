@@ -7,6 +7,7 @@ HOT_STATE=/data/adb/ios_auto_brightness
 HOT_PROC=/proc
 HOT_TX=
 HOT_STOPPED=0 HOT_TRANSFERRED=0
+HOT_LOCK_LIMIT=15 HOT_READY_LIMIT=25
 
 hot_stamp() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
@@ -91,7 +92,7 @@ hot_lock_service() {
   # Root-manager BusyBox flock has no util-linux -w option.
   hot_lock_ticks=0
   until flock -n "$1"; do
-    [ "$hot_lock_ticks" -lt 15 ] || return 1
+    [ "$hot_lock_ticks" -lt "$HOT_LOCK_LIMIT" ] || return 1
     sleep 1; hot_lock_ticks=$((hot_lock_ticks + 1))
   done
 }
@@ -112,7 +113,7 @@ hot_start() {
   # Retain the new helper in the transaction so rollback to an older module
   # also launches outside the manager app, even if its files lack the helper.
   # shellcheck source=module/process-group.sh
-  . "$HOT_TX/process-group.sh"
+  . "${HOT_TX:-$HOT_ACTIVE}/process-group.sh"
   iab_detach_cgroups || return 1
   # In particular, do not let the service inherit the update transaction lock.
   nohup setsid "$IAB_BB" sh "$HOT_ACTIVE/service.sh" 8>&- 7>&- 9>&- \
@@ -120,7 +121,7 @@ hot_start() {
 }
 hot_ready() {
   hot_ticks=0 hot_first=
-  while [ "$hot_ticks" -lt 25 ]; do
+  while [ "$hot_ticks" -lt "$HOT_READY_LIMIT" ]; do
     hot_flags && return 1
     hot_report=$(timeout 4 sh "$HOT_ACTIVE/control.sh" upgrade-ready 2>/dev/null)
     if printf '%s' "$hot_report" | grep -q '"ready":true'; then
@@ -247,6 +248,30 @@ hot_prepare() {
   HOT_TRANSFERRED=1
   echo 'New service healthy; WebUI unlock follows installer completion (no reboot).'
 }
+hot_activate() {
+  # KernelSU native hot install (hotinstall.sh): KernelSU has already replaced
+  # the module directory and leaves no update marker, so the manager offers no
+  # reboot. It neither stops the old service nor keeps a rollback copy, and it
+  # waits at most 30 seconds for this script.
+  HOT_LOCK_LIMIT=8 HOT_READY_LIMIT=10
+  umask 077
+  for hot_path in "$HOT_STATE" "$HOT_STATE/update.lock" "$HOT_STATE/supervisor.lock" "$HOT_STATE/core.lock"; do
+    [ ! -L "$hot_path" ] || { echo 'State directory or lock is a symlink; reboot to apply the update'; return 1; }
+  done
+  mkdir -p "$HOT_STATE" || return 1
+  exec 8>"$HOT_STATE/update.lock"
+  hot_lock_service 8 || { echo 'Another update or start is in progress; reboot to apply the update'; return 1; }
+  [ "$(getprop sys.boot_completed)" = 1 ] || { echo 'System is still booting; the service starts with it'; return 1; }
+  # The new files are active now: a first install needs no reboot either.
+  rm -f "$HOT_STATE/first-install-boot"
+  printf 'stopping\n' > "$HOT_STATE/update-status"
+  hot_stop || { echo 'Previous service did not stop; reboot to apply the update'; return 1; }
+  printf 'starting\n' > "$HOT_STATE/update-status"
+  hot_start || { hot_unlock_service; echo 'Module is disabled or being removed; service not started'; return 1; }
+  hot_ready || { echo 'New service health unconfirmed; see /data/adb/ios_auto_brightness/service.log'; return 1; }
+  printf 'ready\n' > "$HOT_STATE/update-status"
+  echo 'Hot install complete; the new version is running without reboot.'
+}
 
 [ "$1" != --library ] || return 0
 # Installer cwd (e.g. /dev/tmp) is removed on completion. Android's Java runtime
@@ -261,6 +286,7 @@ if [ "${IAB_UPDATE_SHELL_READY:-}" != "$$" ]; then
 fi
 case "$1" in
   prepare) shift; hot_prepare "$@"; exit $? ;;
+  activate) hot_activate; exit $? ;;
   finish)
     HOT_TX=$2 HOT_TOKEN=$3 HOT_SHELL=$4 HOT_SHELL_STAMP=$5 HOT_PARENT=$6 HOT_PARENT_STAMP=$7
     case "$HOT_TX" in "$HOT_STATE/updates/txn."*) ;; *) exit 1 ;; esac

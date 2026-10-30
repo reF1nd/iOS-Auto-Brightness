@@ -16,7 +16,7 @@ mkdir -p "$STATE"
 chmod 700 "$STATE"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/bin/ios_brightness_daemon" 0 0 0755
-for f in service.sh control.sh check_status.sh uninstall.sh hot-update.sh start-service.sh; do set_perm "$MODPATH/$f" 0 0 0755; done
+for f in service.sh control.sh check_status.sh uninstall.sh hot-update.sh hotinstall.sh start-service.sh; do set_perm "$MODPATH/$f" 0 0 0755; done
 # Keep reference keys from the existing or a v6.8 configuration, dropping keys
 # of earlier rewrites; every kept value passes the core's own validation.
 KEYS='alpha_fast|alpha_mid|alpha_slow|fast_threshold|slow_threshold|spike_up|spike_down|hyst_low|hyst_high|manual_gamma|high_lux_threshold|high_lux_boost_max|high_lux_min_pct|high_lux_duration_ms|learning_enabled|dual_sensor|log_max_bytes|log_max_backups'
@@ -56,11 +56,19 @@ BOOT_ID=$(cat /proc/sys/kernel/random/boot_id) || abort 'Cannot identify this bo
 if [ ! -f "$ACTIVE/control.sh" ] || [ ! -x "$ACTIVE/bin/ios_brightness_daemon" ]; then
   printf '%s\n' "$BOOT_ID" > "$STATE/first-install-boot" || abort 'Cannot record first installation.'
 fi
-sh "$MODPATH/hot-update.sh" prepare "$MODPATH" "$$" "$PPID" "$ZIPFILE" "$BOOTMODE"
-hot_result=$?
-case "$hot_result" in
-  0) ui_print 'Hot update started successfully; WebUI becomes available after the installer exits.' ;;
-  2) ui_print 'Installation staged. Reboot required to activate this module.' ;;
-  *) abort 'Hot update failed. Inspect /data/adb/ios_auto_brightness/hot-update.log and updates/ backups.' ;;
-esac
+if [ "$KSU_HAS_HOT_INSTALL" = true ]; then
+  # KernelSU replaces the module directory itself after this script and runs
+  # hotinstall.sh, which hands the service over; no reboot is offered. If it
+  # falls back to a staged install, the module activates on the next boot.
+  export MODULE_HOT_INSTALL_REQUEST=true MODULE_HOT_RUN_SCRIPT=hotinstall.sh
+  ui_print 'KernelSU hot install requested; the new version starts when installation finishes.'
+else
+  sh "$MODPATH/hot-update.sh" prepare "$MODPATH" "$$" "$PPID" "$ZIPFILE" "$BOOTMODE"
+  hot_result=$?
+  case "$hot_result" in
+    0) ui_print 'Hot update started successfully; WebUI becomes available after the installer exits.' ;;
+    2) ui_print 'Installation staged. Reboot required to activate this module.' ;;
+    *) abort 'Hot update failed. Inspect /data/adb/ios_auto_brightness/hot-update.log and updates/ backups.' ;;
+  esac
+fi
 ui_print 'Existing learning offset and configuration are preserved.'

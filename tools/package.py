@@ -44,7 +44,7 @@ with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslev
         z.writestr(info, data)
 with zipfile.ZipFile(archive) as z:
     assert z.testzip() is None
-    for name in ['module.prop','customize.sh','service.sh','hot-update.sh','start-service.sh','process-group.sh','uninstall.sh','skip_mount',
+    for name in ['module.prop','customize.sh','service.sh','hot-update.sh','hotinstall.sh','start-service.sh','process-group.sh','uninstall.sh','skip_mount',
                  'control.sh','check_status.sh','default.conf','webroot/index.html','webroot/app.js',
                  'bin/arm64-v8a/ios_brightness_daemon','LICENSE','SOURCE.txt']:
         assert name in z.namelist(), name
