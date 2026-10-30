@@ -449,9 +449,10 @@ class AndroidPlatform final : public iab::Platform {
   bool user_drag(float& lux, float& logical) override {
     // The reporter sends mUserLux/mUserLogicalNit with every anchor change.
     if (link_.connected()) {
+      if (link_.anchors().empty()) return false;
       float user_lux = 0.0f, user_logical = 0.0f;
-      return !link_.anchors().empty() && changed(link_point(link_.anchors(), user_lux, user_logical), user_lux,
-                                                 user_logical, lux, logical);
+      const std::string point = link_point(link_.anchors(), user_lux, user_logical);
+      return changed(point, user_lux, user_logical, lux, logical);
     }
     // dumpsys display is large: query it when the settings file changed (a
     // drag persists the slider) and otherwise every 8 s.
@@ -471,7 +472,8 @@ class AndroidPlatform final : public iab::Platform {
     settings_stamp_ = stamp;
     user_checked_ = now;
     float user_lux = 0.0f, user_logical = 0.0f;
-    return changed(user_point(user_lux, user_logical), user_lux, user_logical, lux, logical);
+    const std::string point = user_point(user_lux, user_logical);
+    return changed(point, user_lux, user_logical, lux, logical);
   }
   bool follows_system() override { return link_.connected() && !link_.anchors().empty(); }
   bool system_anchors(std::string& text) override {
