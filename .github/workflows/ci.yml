@@ -71,8 +71,10 @@ jobs:
           IAB_TEST_BUSYBOX=/usr/bin/busybox python3 tests/process_group_test.py
       - name: Check the system_server anchor restore
         run: |
-          javac -Xlint:all -Werror -d build/java-test zygisk/java/iab/AnchorState.java tests/AnchorStateTest.java
+          javac -Xlint:all -Werror -d build/java-test zygisk/java/iab/AnchorState.java zygisk/java/iab/SystemState.java \
+            tests/AnchorStateTest.java tests/SystemStateTest.java
           java -cp build/java-test iab.AnchorStateTest
+          java -cp build/java-test iab.SystemStateTest
       - name: Detect core implementation
         id: core
         run: |

@@ -27,7 +27,7 @@ test('WebUI shows runtime, edits configuration, resets learning and starts the s
   const commands = [];
   const runtime = {ok: true, version: 'v8-test', mode: 'auto', screen_on: true, proximity_near: false, front_lux: 12.5, back_lux: 300,
     lux_source: 'rear', smoothed_lux: 120, target: 2400, current: 2300, max: 16383, poll_ms: 800, sunlight: false, battery: 70,
-    charging: false, slider: 42, learnable: true, last_learning: 'learned', good_curve: true,
+    charging: false, slider: 42, learnable: true, last_learning: 'learned', good_curve: true, thermal_limit: 0.37485194,
     anchors: [[0, 7.96, 1, 142], [30, 135, 0, 1374], [600, 220, 0, 2121], [5000, 1060, 0, 6552]],
     curve: [[0.1, 142], [1, 152], [10, 391], [100, 1460]], default_curve: [[0.1, 33], [1, 47], [10, 391], [100, 1460]]};
   const verb = (command) => command.match(/control\.sh' '?([\w-]+)/)?.[1];
@@ -58,6 +58,7 @@ test('WebUI shows runtime, edits configuration, resets learning and starts the s
   assert.ok(texts('status').includes('后置（系统双光感策略）'));
   assert.ok(texts('status').includes('2400 / 2300'));
   assert.ok(texts('status').includes('HyperOS 逻辑尼特曲线'));
+  assert.ok(texts('status').includes('上限 6141'));
   assert.match(elements.get('learning').textContent, /已记住 1\/3 个拖动点：0\.0 lux → 亮度条 8\.0 逻辑尼特（节点 142）/);
   assert.match(elements.get('learning').textContent, /已记住一次拖动/);
   assert.match(elements.get('learning').textContent, /息屏较久后会回落/);

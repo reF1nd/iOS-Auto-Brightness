@@ -5,6 +5,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <string>
@@ -64,6 +65,36 @@ void reports_state_and_anchors() {
   put(pair.peer, message("lux", "12.5") + message("state", "1"));
   CHECK_EQ(pair.link.service(), static_cast<unsigned>(SystemLink::kState));
   CHECK_EQ(pair.link.display_state(), 1);
+}
+
+void reports_thermal_limit_and_scene() {
+  Pair pair;
+  put(pair.peer, message("hello", "1"));
+  pair.link.service();
+  CHECK(std::isnan(pair.link.limit()));
+  CHECK_EQ(pair.link.scene(), -1);
+  put(pair.peer, message("limit", "0.37485194") + message("scene", "3"));
+  const unsigned events = pair.link.service();
+  CHECK(events & SystemLink::kLimit);
+  CHECK(events & SystemLink::kScene);
+  CHECK_NEAR(pair.link.limit(), 0.37485194, 1e-7);
+  CHECK_EQ(pair.link.scene(), 3);
+  put(pair.peer, message("limit", "0.37485194") + message("scene", "3"));
+  CHECK_EQ(pair.link.service(), 0u);
+  put(pair.peer, message("limit", "1.0") + message("scene", "0"));
+  CHECK_EQ(pair.link.service(), static_cast<unsigned>(SystemLink::kLimit | SystemLink::kScene));
+  CHECK_NEAR(pair.link.limit(), 1.0, 1e-9);
+  CHECK_EQ(pair.link.scene(), 0);
+  close(pair.peer);
+  pair.peer = -1;
+  pair.link.service();
+  CHECK(std::isnan(pair.link.limit()));
+  CHECK_EQ(pair.link.scene(), -1);
+  for (const std::string& bad : {message("limit", "1.5"), message("limit", "x"), message("scene", "-2")}) {
+    Pair other;
+    put(other.peer, message("hello", "1") + bad);
+    CHECK(other.link.service() & SystemLink::kRejected);
+  }
 }
 
 void reassembles_split_messages() {
@@ -152,6 +183,7 @@ void listens_on_an_abstract_socket() {
 
 int main() {
   reports_state_and_anchors();
+  reports_thermal_limit_and_scene();
   reassembles_split_messages();
   rejects_bad_peers();
   loses_and_resets();

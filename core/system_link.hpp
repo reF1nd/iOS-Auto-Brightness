@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Receiving end of zygisk/java/iab/Reporter.java. system_server connects to
 // the abstract socket "iab_brightness" and sends "<type> <length>\n<payload>"
-// messages: hello (protocol version), state (Display.STATE_* of display 0)
-// and anchors (RefactorNitController in learn.conf form). The daemon only
-// sends "reset\n". Without a peer the daemon falls back to dumpsys and
-// bl_power.
+// messages: hello (protocol version), state (Display.STATE_* of display 0),
+// anchors (RefactorNitController in learn.conf form), limit (the thermal
+// brightness limit of display 0, 0..1) and scene (DualSensorPolicy::Scene
+// flags). The daemon only sends "reset\n". Without a peer the daemon falls
+// back to dumpsys and bl_power.
 #pragma once
 
 #include <functional>
@@ -26,6 +27,8 @@ class SystemLink {
     kState = 1u << 2,
     kAnchors = 1u << 3,
     kRejected = 1u << 4,  // wrong peer, protocol version or framing
+    kLimit = 1u << 5,
+    kScene = 1u << 6,
   };
 
   // Decides whether the process behind an accepted socket may report.
@@ -47,6 +50,10 @@ class SystemLink {
   bool connected() const { return hello_; }
   int display_state() const { return state_; }
   const std::string& anchors() const { return anchors_; }
+  // NaN until reported.
+  float limit() const { return limit_; }
+  // -1 until reported.
+  int scene() const { return scene_; }
   bool send_reset();
 
  private:
@@ -58,6 +65,8 @@ class SystemLink {
   int listen_fd_ = -1, peer_fd_ = -1;
   bool hello_ = false;
   int state_ = kUnknown;
+  float limit_;
+  int scene_ = -1;
   std::string buffer_, anchors_;
 };
 

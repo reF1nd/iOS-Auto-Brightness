@@ -3,7 +3,7 @@
 - **系统**：Android 12（API 31）及以上，安装包含 ARM64、ARMv7、x86_64、x86 核心。
 - **Root**：KernelSU、APatch、Magisk。监督进程依赖管理器自带的 BusyBox（`flock`）。WebUI 需要支持 `ksu.exec` 的宿主。
 - **背光**：优先 `/sys/class/backlight/panel0-backlight`，否则按名称排序取第一个 `max_brightness > 0` 的设备。节点值按“亮度值 × `max_brightness`”换算（见下方亮度曲线）。
-- **光感**：通过 `libandroid.so` 的 NDK 接口读取默认光感（类型 5）、接近传感器（类型 8）和小米后置光感（类型 33171055）。NDK 不可用时依次尝试 `/sys/bus/iio/devices/*/in_illuminance_input`、`/sys/class/sensors/*/lux`、`dumpsys sensorservice`。
+- **光感**：通过 `libandroid.so` 的 NDK 接口读取默认光感（类型 5；系统主屏改用 FOV 光感时，即 `ro.miui.support.light.fov` 为 1，改用类型 33172111）、接近传感器（类型 8）和小米后置光感（类型 33171055）。NDK 不可用时依次尝试 `/sys/bus/iio/devices/*/in_illuminance_input`、`/sys/class/sensors/*/lux`、`dumpsys sensorservice`。
 - **设置**：读取 `/data/system/users/0/settings_system.xml`（ABX 或文本 XML），与 v6.8 一样只支持主用户。读不到时保持上一次的值；从未读到时按自动模式处理。
 - **亮度曲线**：按本机系统自己的自动亮度曲线计算，启动日志的 `Curve:` 行写明来源。
   - HyperOS 开启 `config_refactor_brightness_policy`（`cmd overlay lookup` 查询，本机由 `AospFrameworkResOverlay` 打开）时，使用 `RefactorNitController` 的逻辑尼特曲线。参数（默认锚点、亮度条换算系数、高光系数、good curve、重置策略）从 `pm path com.miui.rom` 指向的 `framework-ext-res.apk` 读取，再按优先级叠加 `cmd overlay list com.miui.rom` 中已启用 overlay 的同名值；`resources.arsc` 必须未压缩存放（Android 对系统包的要求）。读不到或数值不合理时使用小米 17 Pro Max 的值。
@@ -14,13 +14,14 @@
 - **重启后保留学习**：HyperOS 只在内存里保存锚点，重启后回到默认曲线；系统在模块两次写入之间写的是它自己的值，所以只靠 `learn.conf` 时，重启后看起来"没记住"。装有 Zygisk（Zygisk Next、ReZygisk、NeoZygisk 或 Magisk 自带）时，模块的 Zygisk 部分会在 system_server 启动后，把 `learn.conf` 写回主屏的 `RefactorNitController`，两边从开机起就一致。
   - 只改写锚点相关的字段（`mAnchor*`、`mGoodAnchor*`、`mOrderCounter`、`mIsHaveGoodCurve`、`mUserLux`、`mUserLogicalNit`），之后的学习和 good curve 仍由系统完成，不挂钩任何方法。字段名取自 HyperOS 的 `miui-services.jar`；找不到字段、系统默认曲线和 `learn.conf` 不一致时什么也不改，并在 logcat（标签 `iOS_Bright`）里说明原因。
   - 启动日志会写明系统和模块的锚点是否一致（`Learn: the system holds ...`）。
-  - 开机完成后，同一线程改为上报：连接守护进程监听的抽象 socket `iab_brightness`，主屏显示状态或锚点一变就发送（每 0.5 秒检查一次，锚点在显示 handler 线程上读取）。守护进程据此识别拖动、跟随系统的 good curve 回落和重置，不再每 8 秒执行 `dumpsys display`；WebUI 清除学习时也让系统一起重置。守护进程只接受 uid 1000、进程名为 `system_server` 的连接，上报方也只连 root 的监听端。没有连接时回到 `dumpsys` 和 `bl_power`，WebUI 的“系统联动”显示当前方式。
+  - 开机完成后，同一线程改为上报：连接守护进程监听的抽象 socket `iab_brightness`，主屏显示状态、锚点、温控上限或双光感场景（手电筒、夜间驾驶、反光）一变就发送（每 0.5 秒检查一次，锚点在显示 handler 线程上读取）。守护进程据此识别拖动、跟随系统的 good curve 回落和重置，不再每 8 秒执行 `dumpsys display`；WebUI 清除学习时也让系统一起重置。守护进程只接受 uid 1000、进程名为 `system_server` 的连接，上报方也只连 root 的监听端。没有连接时回到 `dumpsys` 和 `bl_power`，WebUI 的“系统联动”显示当前方式。
   - system_server 在 2 分钟内连续第三次启动时（例如开机循环），Zygisk 部分停止工作并留下 `zygisk.disabled`，重新安装模块后恢复。
   - 这部分在 system_server 启动时加载，所以模块的安装和更新都要重启才生效；APatch、没有 Zygisk 的 KernelSU 不支持。
 - **同系统的其他机型**：
   - 曲线参数、overlay 和屏幕亮度表都按本机读取，正常情况下与该机系统的默认曲线一致，可对照启动日志的 `Curve check`（与系统表相差超过 5% 时会注明）。
-  - 后置光感阈值、HBM 门限仍是小米 17 Pro Max 的值；没有后置光感的机型只用前置。
-  - 阳光模式的温度门槛沿用 v6.8：只看前 20 个温度区。本机匹配的温度区是第 79、90 个，所以门槛实际不起作用，其他机型取决于温度区的编号。
+  - 后置光感的阈值、防抖、时间窗和 HBM 门限按本机 `dumpsys display` 读取；没有后置光感的机型只用前置。
+  - 温控上限是系统按本机配置算出来的，模块直接采用。
   - 背光节点的位数和低亮度驱动映射因屏而异，见上方节点换算。
-- **双光感**：阈值曲线取自小米 17 Pro Max 的系统配置；其他设备没有后置光感时自动只用前置。
+- **双光感**：参数取自 `dumpsys display` 主屏段的 `MiuiHysteresisLevels`、`Automatic Brightness Controller Configuration` 和 `Dual Sensor Policy Configuration`；缺任何一项（非 HyperOS、系统不跑双光感策略）时后置只在前置无读数时使用。手电筒、夜间驾驶和反光场景的判断要靠 Zygisk 上报，没有 Zygisk 时按“无”处理。
+- **温控**：所有输出不超过系统的温控上限（`mThermalMaxBrightness` 与电池温控上限）。装有 Zygisk 时实时上报，否则最多 8 秒从 `dumpsys display` 读一次；读不到这两个字段（非 HyperOS）时不限制。
 - **熄屏判断**：Zygisk 上报连接时用主屏的显示状态，息屏显示（AOD）按熄屏处理；否则读背光设备的 `bl_power`，无法打开时视为亮屏（v6.8 行为，AOD 会被当成亮屏）。

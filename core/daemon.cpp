@@ -23,6 +23,7 @@
 
 #include "android_resources.hpp"
 #include "config.hpp"
+#include "display_dump.hpp"
 #include "engine.hpp"
 #include "settings_reader.hpp"
 #include "system_curve.hpp"
@@ -159,11 +160,15 @@ static_assert(sizeof(NativeSensorEvent) == 104, "ASensorEvent layout");
 constexpr int kTypeLight = 5;
 constexpr int kTypeProximity = 8;
 constexpr int kTypeBackLight = 33171055;  // xiaomi.sensor.back_lux
+// "Optimization light fov Sensor": AutomaticBrightnessControllerImpl.switchLightSensor
+// reads it for display 0 when ro.miui.support.light.fov is 1.
+constexpr int kTypeLightFov = 33172111;
 constexpr int kSensorRateUs = 800000;
 
 class Sensors {
  public:
-  bool open(void (*log)(const char*)) {
+  // main_type: the light sensor the framework reads for the main display.
+  bool open(void (*log)(const char*), int main_type) {
     library_ = dlopen("libandroid.so", RTLD_NOW);
     if (!library_) {
       log("dlopen libandroid.so failed; using fallback light source");
@@ -194,11 +199,13 @@ class Sensors {
       log("No sensor event queue; using fallback light source");
       return false;
     }
-    front_ = get_default_(manager_, kTypeLight);
+    front_ = main_type == kTypeLight ? nullptr : find(main_type);
+    main_type_ = front_ ? main_type : kTypeLight;
+    if (!front_) front_ = get_default_(manager_, kTypeLight);
     if (front_ && enable_(queue_, front_) >= 0) {
       if (set_rate_) set_rate_(queue_, front_, kSensorRateUs);
       ndk_ = true;
-      log("Front ALS ready (800000us)");
+      log(main_type_ == kTypeLight ? "Front ALS ready (800000us)" : "Front ALS ready (800000us, fov sensor as the system)");
     }
     back_ = find(kTypeBackLight);
     if (back_ && enable_(queue_, back_) >= 0) {
@@ -222,14 +229,16 @@ class Sensors {
     }
   }
 
-  void poll(std::vector<SensorEvent>& events) {
+  // driving_factor > 0: night driving; AutomaticBrightnessController then
+  // takes values[2] times the fov factor when values[1] is 1.
+  void poll(std::vector<SensorEvent>& events, float driving_factor) {
     if (!queue_) return;
     if (poll_once_) poll_once_(0, nullptr, nullptr, nullptr);
     const int64_t mono = monotonic_ms(), boot = boottime_ms();
     NativeSensorEvent event;
     while (get_events_(queue_, &event, 1) > 0) {
       SensorEvent out;
-      if (event.type == kTypeLight) out.kind = SensorEvent::Kind::Front;
+      if (event.type == main_type_) out.kind = SensorEvent::Kind::Front;
       else if (event.type == kTypeBackLight) out.kind = SensorEvent::Kind::Back;
       else if (event.type == kTypeProximity) out.kind = SensorEvent::Kind::Proximity;
       else continue;
@@ -237,6 +246,9 @@ class Sensors {
       const int64_t age = boot - event.timestamp / 1000000;
       out.time = mono - std::clamp<int64_t>(age, 0, 60000);
       out.value = event.data[0];
+      if (out.kind == SensorEvent::Kind::Front && driving_factor > 0.0f && event.data[1] == 1.0f) {
+        out.value = event.data[2] * driving_factor;
+      }
       events.push_back(out);
     }
   }
@@ -288,6 +300,7 @@ class Sensors {
   void* manager_ = nullptr;
   void* queue_ = nullptr;
   const void *front_ = nullptr, *back_ = nullptr, *proximity_ = nullptr;
+  int main_type_ = kTypeLight;
   bool ndk_ = false, back_ok_ = false;
 };
 
@@ -304,8 +317,8 @@ void log_line(const char* text) {
 
 class AndroidPlatform final : public iab::Platform {
  public:
-  AndroidPlatform(const std::string& backlight, Sensors& sensors, iab::SystemLink& link)
-      : backlight_(backlight), sensors_(sensors), link_(link) {}
+  AndroidPlatform(const std::string& backlight, Sensors& sensors, iab::SystemLink& link, float main_factor)
+      : backlight_(backlight), sensors_(sensors), link_(link), main_factor_(main_factor) {}
 
   void discover_fallback() {
     const std::string als = trimmed(run_command("getprop persist.sys.display.als_name 2>/dev/null"));
@@ -351,7 +364,9 @@ class AndroidPlatform final : public iab::Platform {
     chmod(backlight_file("brightness").c_str(), writable ? 0644 : 0444);
   }
   void set_light_sensors_enabled(bool enabled) override { sensors_.set_light_enabled(enabled); }
-  void poll_sensors(std::vector<SensorEvent>& events) override { sensors_.poll(events); }
+  void poll_sensors(std::vector<SensorEvent>& events) override {
+    sensors_.poll(events, (scene() & iab::DualSensorPolicy::kNightDriving) ? main_factor_ : 0.0f);
+  }
   bool ndk_sensors() override { return sensors_.ndk(); }
   bool back_sensor() override { return sensors_.back(); }
   int power_state() override {
@@ -406,29 +421,15 @@ class AndroidPlatform final : public iab::Platform {
     charging = status_ok && status.find("Charging") != std::string::npos;
     return capacity >= 0 || status_ok;
   }
-  int boost_temperature() override {
-    if (!zones_scanned_) {
-      zones_scanned_ = true;
-      for (int zone = 0; zone <= 19 && zones_.size() < 8; ++zone) {
-        std::string type;
-        if (!read_text(device_path("/sys/class/thermal/thermal_zone" + std::to_string(zone) + "/type"), type, 32)) {
-          continue;
-        }
-        for (const char* word : {"battery", "skin", "shell", "quiet", "back", "soc"}) {
-          if (type.find(word) != std::string::npos) {
-            zones_.push_back(zone);
-            break;
-          }
-        }
-      }
-    }
-    int highest = 0;
-    for (const int zone : zones_) {
-      int value = read_int(device_path("/sys/class/thermal/thermal_zone" + std::to_string(zone) + "/temp"), -1);
-      if (value > 1000) value /= 1000;
-      if (value >= 16 && value <= 79) highest = std::max(highest, value);
-    }
-    return highest;
+  // Reported live by the Zygisk part; otherwise read from dumpsys display.
+  float thermal_limit() override {
+    if (link_.connected() && std::isfinite(link_.limit())) return link_.limit();
+    if (monotonic_ms() - dumped_ >= 8000) display_dump();
+    return std::isfinite(dumped_limit_) ? dumped_limit_ : 1.0f;
+  }
+  // Only the Zygisk part can see the torch and SceneDetector.
+  unsigned scene() override {
+    return link_.connected() && link_.scene() >= 0 ? static_cast<unsigned>(link_.scene()) : 0u;
   }
   bool other_display_on() override {
     DIR* dir = opendir(device_path("/sys/class/backlight").c_str());
@@ -472,7 +473,7 @@ class AndroidPlatform final : public iab::Platform {
     settings_stamp_ = stamp;
     user_checked_ = now;
     float user_lux = 0.0f, user_logical = 0.0f;
-    const std::string point = user_point(user_lux, user_logical);
+    const std::string point = user_point(display_dump(), user_lux, user_logical);
     return changed(point, user_lux, user_logical, lux, logical);
   }
   bool follows_system() override { return link_.connected() && !link_.anchors().empty(); }
@@ -494,9 +495,17 @@ class AndroidPlatform final : public iab::Platform {
   }
   void log(const std::string& line) override { log_line(line.c_str()); }
 
-  void prime_user_point() {
+  // dumpsys display, also noting the thermal limit it shows.
+  std::string display_dump() {
+    std::string dump = run_command("dumpsys display 2>/dev/null");
+    dumped_ = monotonic_ms();
+    const float limit = iab::read_thermal_limit(iab::main_display_section(dump));
+    if (std::isfinite(limit)) dumped_limit_ = limit;
+    return dump;
+  }
+  void prime_user_point(const std::string& dump) {
     float lux = 0.0f, logical = 0.0f;
-    last_user_point_ = user_point(lux, logical);
+    last_user_point_ = user_point(dump, lux, logical);
     user_checked_ = monotonic_ms();
   }
   const std::string& settings_status() const { return settings_status_; }
@@ -509,7 +518,7 @@ class AndroidPlatform final : public iab::Platform {
 
   // mUserLux/mUserLogicalNit of RefactorNitController change only when a
   // drag reaches updateLogicalCurve, never on automatic slider rewrites.
-  static std::string user_point(float& lux, float& logical);
+  static std::string user_point(const std::string& dump, float& lux, float& logical);
   static std::string link_point(const std::string& anchors, float& lux, float& logical);
   static std::string point_text(float lux, float logical) {
     if (!std::isfinite(lux) || !std::isfinite(logical)) return "";
@@ -533,8 +542,9 @@ class AndroidPlatform final : public iab::Platform {
   std::string fallback_path_, fallback_command_;
   int64_t dumpsys_checked_ = -15000;
   float dumpsys_lux_ = -1.0f;
-  bool zones_scanned_ = false;
-  std::vector<int> zones_;
+  float main_factor_;
+  int64_t dumped_ = INT64_MIN / 2;
+  float dumped_limit_ = NAN;
   std::string settings_path() const { return device_path("/data/system/users/0/settings_system.xml"); }
 
   std::string last_user_point_;
@@ -543,8 +553,8 @@ class AndroidPlatform final : public iab::Platform {
   std::string settings_status_ = "unread";
 };
 
-std::string AndroidPlatform::user_point(float& lux, float& logical) {
-  const std::string block = refactor_section(run_command("dumpsys display 2>/dev/null"));
+std::string AndroidPlatform::user_point(const std::string& dump, float& lux, float& logical) {
+  const std::string block = refactor_section(dump);
   if (block.empty()) return "";
   lux = dump_value(block, "mUserLux=");
   logical = dump_value(block, "mUserLogicalNit=");
@@ -572,6 +582,18 @@ bool system_server_peer(int fd) {
 #endif
 }
 
+
+std::string property(const char* name) {
+  return trimmed(run_command(std::string("getprop ") + name + " 2>/dev/null", 256));
+}
+
+// Float.valueOf of the property; 1 when unset, like loadSensorConfig.
+float factor_property(const char* name) {
+  const std::string text = property(name);
+  char* end = nullptr;
+  const float value = std::strtof(text.c_str(), &end);
+  return end != text.c_str() && std::isfinite(value) && value > 0.0f ? value : 1.0f;
+}
 
 std::string find_backlight() {
   const std::string preferred = device_path("/sys/class/backlight/panel0-backlight");
@@ -784,7 +806,8 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
       "\"target\":%d,\"current\":%d,\"max\":%d,\"poll_ms\":%d,\"slider\":%d,"
       "\"curve_source\":\"%s\",\"learnable\":%s,\"learning_enabled\":%s,\"last_learning\":\"%s\","
       "\"anchors\":[%s],\"good_curve\":%s,\"reset_policy\":%s,\"user_lux\":%.2f,\"user_logical\":%.2f,"
-      "\"curve\":[%s],\"default_curve\":[%s],\"dual_sensor\":%s,"
+      "\"curve\":[%s],\"default_curve\":[%s],\"dual_sensor\":%s,\"dual_policy\":%s,"
+      "\"thermal_limit\":%.4f,\"scene\":%u,"
       "\"sunlight\":%s,\"fast_dark\":%s,\"stable_count\":%d,\"bright_count\":%d,\"dark_count\":%d,"
       "\"sunlight_count\":%d,\"battery\":%d,\"charging\":%s,\"settings\":\"%s\",\"backlight\":\"%s\","
       "\"system_link\":\"%s\",\"local_hour\":%d}\n",
@@ -796,7 +819,8 @@ void write_status(const Engine& engine, const AndroidPlatform& platform, const C
       curve.learnable() ? "true" : "false", config.learning_enabled ? "true" : "false", s.last_learning.c_str(),
       anchors.c_str(), controller.has_good_curve() ? "true" : "false",
       controller.config().reset_policy ? "true" : "false", controller.user_lux(), controller.user_logical(),
-      current.c_str(), defaults.c_str(), config.dual_sensor ? "true" : "false", s.sunlight ? "true" : "false",
+      current.c_str(), defaults.c_str(), config.dual_sensor ? "true" : "false", s.dual_policy ? "true" : "false",
+      s.thermal_limit, s.scene, s.sunlight ? "true" : "false",
       s.fast_dark ? "true" : "false", s.stable_count, s.bright_count, s.dark_count, s.sunlight_count,
       s.battery, s.charging ? "true" : "false", platform.settings_status().c_str(),
       json_escape(backlight).c_str(), platform.link_status(), local_hour_now());
@@ -919,6 +943,15 @@ void log_link(unsigned events, const iab::SystemLink& link, int& rejected) {
     ++rejected;
     log_line("System link: refused a peer that is not system_server or speaks another protocol");
   }
+  if ((events & iab::SystemLink::kScene) && link.connected()) {
+    const int scene = link.scene();
+    char text[128];
+    std::snprintf(text, sizeof text, "System link: scene%s%s%s%s", scene == 0 ? " clear" : "",
+                  (scene & iab::DualSensorPolicy::kAssistBlocked) ? " rear-blocked(torch)" : "",
+                  (scene & iab::DualSensorPolicy::kNightDriving) ? " night-driving" : "",
+                  (scene & iab::DualSensorPolicy::kReflective) ? " reflective" : "");
+    log_line(text);
+  }
   if ((events & iab::SystemLink::kState) && link.connected()) {
     char text[64];
     std::snprintf(text, sizeof text, "System link: display state %d", link.display_state());
@@ -960,14 +993,17 @@ int run(const std::string& state, const std::string& prop) {
                 config.high_lux_duration_ms);
   log_line(text);
 
+  // AutomaticBrightnessControllerImpl.loadSensorConfig.
+  const bool fov_sensor = property("ro.miui.support.light.fov") == "1";
+  const float main_factor = factor_property("ro.miui.sensor.fov.factor");
   Sensors sensors;
-  sensors.open(log_line);
+  sensors.open(log_line, fov_sensor ? kTypeLightFov : kTypeLight);
   iab::SystemLink link(system_server_peer);
   if (!link.listen("iab_brightness")) log_line("System link: cannot listen; using dumpsys and bl_power");
-  AndroidPlatform platform(backlight, sensors, link);
+  AndroidPlatform platform(backlight, sensors, link, main_factor);
   if (!sensors.ndk()) platform.discover_fallback();
-  platform.prime_user_point();
-  const std::string dump = run_command("dumpsys display 2>/dev/null");
+  const std::string dump = platform.display_dump();
+  platform.prime_user_point(dump);
   iab::PanelMap panel = read_panel_map(dump);
   if (!panel.valid()) {
     log_line("Panel map: dumpsys unavailable, using the altdb display config");
@@ -1015,6 +1051,28 @@ int run(const std::string& state, const std::string& prop) {
     }
   }
   Engine engine(platform, config, max_level, curve);
+  {
+    iab::DualSensorConfig dual;
+    if (iab::read_dual_sensor_config(iab::main_display_section(dump), dual)) {
+      dual.assist_factor = factor_property("ro.miui.sensor.fov_back.factor");
+      engine.set_dual_sensor(dual);
+      std::snprintf(text, sizeof text,
+                    "Dual sensor: system thresholds (%zu/%zu/%zu points), HBM %.0f lux, horizons %lld/%lld ms, "
+                    "debounce %lld/%lld/%lld ms, rear %lld/%lld/%lld ms x%g",
+                    dual.brightening.size(), dual.small_brightening.size(), dual.darkening.size(),
+                    dual.hbm_minimum_lux, static_cast<long long>(dual.horizon_short),
+                    static_cast<long long>(dual.horizon_long), static_cast<long long>(dual.brightening_debounce),
+                    static_cast<long long>(dual.small_brightening_debounce),
+                    static_cast<long long>(dual.darkening_debounce),
+                    static_cast<long long>(dual.assist_brightening_debounce),
+                    static_cast<long long>(dual.assist_small_brightening_debounce),
+                    static_cast<long long>(dual.assist_darkening_debounce), dual.assist_factor);
+      log_line(text);
+    } else if (sensors.back()) {
+      log_line("Dual sensor: no DualSensorPolicy for display 0 in dumpsys display; the rear sensor only stands in "
+               "for a missing front reading");
+    }
+  }
   engine.begin(monotonic_ms());
 
   log_line("Waiting for sensor...");
@@ -1022,7 +1080,7 @@ int run(const std::string& state, const std::string& prop) {
   for (int attempt = 0; attempt < 40 && g_run; ++attempt) {
     if (sensors.ndk()) {
       std::vector<SensorEvent> events;
-      sensors.poll(events);
+      platform.poll_sensors(events);
       engine.apply_events(events);
       lux = engine.front_lux();
     } else {
@@ -1080,8 +1138,9 @@ int run(const std::string& state, const std::string& prop) {
     if (remaining > 0 && g_run && !g_dump_status) wait_for(link, std::min<int64_t>(remaining, 1000));
     const unsigned events = link.service();
     log_link(events, link, rejected);
-    if (events & (iab::SystemLink::kState | iab::SystemLink::kConnected | iab::SystemLink::kLost)) {
-      // Screen on, off or AOD: act on it now rather than at the next poll.
+    if (events & (iab::SystemLink::kState | iab::SystemLink::kLimit | iab::SystemLink::kConnected |
+                  iab::SystemLink::kLost)) {
+      // Screen on, off or AOD, or a new thermal limit: act on it now rather than at the next poll.
       engine.recheck_power();
       last_tick = monotonic_ms() - engine.poll_ms();
     }

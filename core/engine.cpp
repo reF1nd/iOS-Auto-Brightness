@@ -62,14 +62,11 @@ void Engine::refresh_battery(int64_t now) {
   charging_ = charging;
 }
 
+// The reference also refused above 45 C; temperature is left to the
+// framework's own limit (apply_thermal_limit).
 bool Engine::can_boost(int64_t now) {
   refresh_battery(now);
-  if (battery_ <= 29 && !charging_) return false;
-  if (thermal_checked_ == 0 || now - thermal_checked_ >= 60000) {
-    thermal_checked_ = now;
-    thermal_ = platform_.boost_temperature();
-  }
-  return thermal_ * 1000 < 45001;
+  return battery_ > 29 || charging_;
 }
 
 void Engine::enable_sensors() {
@@ -135,7 +132,9 @@ float Engine::select_lux(int64_t now) {
     return back_lux_;
   }
   lux_source_ = "front";
-  if (!config_.dual_sensor || !platform_.back_sensor() || front_lux_ < 0.0f) return front_lux_;
+  if (!config_.dual_sensor || !dual_.configured() || !platform_.back_sensor() || front_lux_ < 0.0f) {
+    return front_lux_;
+  }
   dual_.update(now);
   if (!dual_.using_assist()) return front_lux_;
   lux_source_ = "rear";
@@ -152,6 +151,24 @@ int Engine::apply_limits(int level, int64_t now) {
   return level;
 }
 
+// DisplayPowerControllerImpl caps every brightness, the sunlight boost included.
+int Engine::apply_thermal_limit(int level) {
+  float limit = platform_.thermal_limit();
+  if (!(limit > 0.0f && limit < 1.0f)) limit = 1.0f;
+  if (limit != thermal_limit_) {
+    thermal_limit_ = limit;
+    if (limit < 1.0f) {
+      log("Thermal: the system limits brightness to %.4f (level %d)", limit,
+          static_cast<int>(limit * static_cast<float>(max_) + 0.5f));
+    } else {
+      log("Thermal: no system limit");
+    }
+  }
+  if (limit >= 1.0f) return level;
+  const int cap = static_cast<int>(limit * static_cast<float>(max_) + 0.5f);
+  return level < cap ? level : (cap > 1 ? cap : 1);
+}
+
 void Engine::wake(int64_t now) {
   // The reference reapplies the curve at once from the last front reading.
   dual_.reset();
@@ -163,7 +180,7 @@ void Engine::wake(int64_t now) {
   } else {
     lux = smoothed_;
   }
-  const int level = apply_limits(curve_level(lux), now);
+  const int level = apply_thermal_limit(apply_limits(curve_level(lux), now));
   platform_.write_level(clamp_level(level, max_));
   transition_.duration = 0;
   transition_.to = level;
@@ -288,6 +305,7 @@ void Engine::tick(int64_t now) {
   }
   if (automatic) {
     enable_sensors();
+    dual_.set_scene(platform_.scene(), now);
     std::vector<SensorEvent> events;
     platform_.poll_sensors(events);
     apply_events(events);
@@ -412,7 +430,7 @@ void Engine::tick(int64_t now) {
         if (!sunlight_exiting_) {
           sunlight_exiting_ = true;
           sunlight_exit_start_ = now;
-          log("☀️ 阳光模式 温保 exit");
+          log("☀️ 阳光模式 电量 exit");
         }
       } else if (!(threshold > filtered_)) {
         sunlight_confirm_ = 2;
@@ -447,6 +465,8 @@ void Engine::tick(int64_t now) {
     }
   }
 
+  target = apply_thermal_limit(target);
+
   // Hysteresis against the previous target. The reference compares with the
   // current level when no target exists yet but then substitutes that empty
   // (zero) target, driving the panel to its minimum at startup; keep the
@@ -466,12 +486,15 @@ void Engine::tick(int64_t now) {
     transition_.to = previous_to = target;
   }
   int from = current_;
-  if (sunlight_ && target != current_) {
+  // The reference restarts the sunlight and fast-darkening ramps every round
+  // and samples them at their start, so a steady sunlight target never
+  // reaches the panel; a ramp to the same target runs on instead.
+  if (previous_to == target && transition_.duration >= 1) {
+    from = transition_.from;
+  } else if (sunlight_ && target != current_) {
     transition_ = {current_, target, now, 1000};
   } else if (fast_dark_ && target < current_) {
     transition_ = {current_, target, now, 200};
-  } else if (previous_to == target && transition_.duration >= 1) {
-    from = transition_.from;
   } else {
     const float relative = static_cast<float>(std::abs(target - current_)) / static_cast<float>(max_);
     int duration;
@@ -567,6 +590,9 @@ EngineStatus Engine::status() const {
   s.smoothed_lux = smoothed_;
   s.alpha = alpha_;
   s.nits = nits_;
+  s.thermal_limit = thermal_limit_;
+  s.scene = dual_.scene();
+  s.dual_policy = dual_.configured();
   s.target = target_;
   s.current = current_;
   s.poll_ms = poll_ms_;

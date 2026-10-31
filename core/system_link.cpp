@@ -7,6 +7,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -28,7 +29,7 @@ bool nonblocking(int fd) {
 
 }  // namespace
 
-SystemLink::SystemLink(PeerCheck check) : check_(std::move(check)) {}
+SystemLink::SystemLink(PeerCheck check) : check_(std::move(check)), limit_(NAN) {}
 
 SystemLink::~SystemLink() {
   if (peer_fd_ >= 0) close(peer_fd_);
@@ -76,6 +77,8 @@ unsigned SystemLink::drop(unsigned events) {
   }
   hello_ = false;
   state_ = kUnknown;
+  limit_ = NAN;
+  scene_ = -1;
   buffer_.clear();
   anchors_.clear();
   return events;
@@ -143,6 +146,15 @@ unsigned SystemLink::parse() {
       if (state != state_) state_ = state, events |= kState;
     } else if (type == "anchors") {
       if (payload != anchors_) anchors_ = payload, events |= kAnchors;
+    } else if (type == "limit") {
+      char* end = nullptr;
+      const float limit = std::strtof(payload.c_str(), &end);
+      if (end == payload.c_str() || !(limit > 0.0f && limit <= 1.0f)) return drop(events | kRejected);
+      if (limit != limit_) limit_ = limit, events |= kLimit;
+    } else if (type == "scene") {
+      const int scene = std::atoi(payload.c_str());
+      if (scene < 0) return drop(events | kRejected);
+      if (scene != scene_) scene_ = scene, events |= kScene;
     }
     // Other types are left for later protocol additions.
   }

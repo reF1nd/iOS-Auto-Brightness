@@ -11,8 +11,9 @@ import android.util.SparseArray;
  * would write its default curve while the daemon still follows the learned
  * one. Once the controller of the main display exists, this writes the
  * anchors kept in learn.conf back into it on the display handler thread.
- * After boot the same thread reports the display state and the anchors to
- * the daemon (Reporter). Nothing here may throw into system_server.
+ * After boot the same thread reports the display state, the anchors, the
+ * thermal limit and the light sensor scene to the daemon (Reporter).
+ * Nothing here may throw into system_server.
  */
 public final class AnchorRestore {
   private static final String TAG = "iOS_Bright";
@@ -22,6 +23,7 @@ public final class AnchorRestore {
 
   private final AnchorState state;
   private Object displayController;
+  private Object displayImpl;
   private Object controller;
 
   private AnchorRestore(AnchorState state) {
@@ -66,7 +68,7 @@ public final class AnchorRestore {
         Thread.sleep(2000);
       }
       if (state != null) post(handler, true);
-      new Reporter(handler, controller, displayController).run();
+      new Reporter(handler, controller, displayController, displayImpl).run();
     } catch (Throwable t) {
       Log.w(TAG, "System anchors: stopped", t);
     }
@@ -93,6 +95,7 @@ public final class AnchorRestore {
     Object handler = AnchorState.field(impl, "mHandler").get(impl);
     if (refactor == null || !(handler instanceof Handler)) return null;
     displayController = power;
+    displayImpl = impl;
     controller = refactor;
     return (Handler) handler;
   }

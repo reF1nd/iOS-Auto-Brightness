@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "altdb_display.hpp"
 #include "check.hpp"
 #include "engine.hpp"
 
@@ -31,7 +32,8 @@ struct FakePhone : Platform {
   int hour = 12;
   int capacity = 80;
   bool charging = false;
-  int temperature = 30;
+  float limit = 1.0f;
+  unsigned scene_flags = 0;
   bool other_display = false;
   bool drag = false;
   float drag_lux = 0, drag_logical = 0;
@@ -70,7 +72,8 @@ struct FakePhone : Platform {
     ch = charging;
     return true;
   }
-  int boost_temperature() override { return temperature; }
+  float thermal_limit() override { return limit; }
+  unsigned scene() override { return scene_flags; }
   bool other_display_on() override { return other_display; }
   bool user_drag(float& lux, float& logical) override {
     if (!drag) return false;
@@ -113,6 +116,7 @@ struct Rig {
 
   explicit Rig(float initial_lux, int current = 1000, Config c = Config{}, const SystemCurve& curve = SystemCurve())
       : config(c), engine(phone, c, kMax, curve) {
+    engine.set_dual_sensor(test::altdb_dual_sensor());
     phone.level = current;
     engine.begin(now);
     phone.pending.push_back({SensorEvent::Kind::Front, now, initial_lux});
@@ -220,13 +224,65 @@ void sunlight_boost_after_two_samples() {
   CHECK(s.sunlight);
   CHECK(s.target >= static_cast<int>(kMax * 0.9f));
   CHECK_EQ(s.sunlight_count, 1);
+  // The 1000 ms ramp runs on while the boosted target holds (the reference
+  // restarts it every round and never writes).
+  rig.ticks(3);
+  CHECK_EQ(rig.phone.level, rig.engine.status().target);
+  CHECK(rig.phone.level > curve_level(20000.0f, kMax));
 }
 
-void hot_phone_blocks_sunlight() {
+void low_battery_blocks_sunlight() {
   Rig rig(20000.0f, curve_level(20000.0f, kMax));
-  rig.phone.temperature = 46;
+  rig.phone.capacity = 25;
   rig.ticks(4);
   CHECK(!rig.engine.status().sunlight);
+}
+
+void system_thermal_limit_caps_output() {
+  // 600 nits at 38 C below 5500 lux on altdb, reported as a brightness.
+  const float limit = 0.37485194f;
+  const int cap = static_cast<int>(limit * kMax + 0.5f);
+  CHECK(curve_level(8000.0f, kMax) > cap);
+  Rig rig(8000.0f, curve_level(8000.0f, kMax));
+  rig.ticks(2);
+  rig.phone.limit = limit;
+  rig.ticks(4);
+  CHECK_EQ(rig.engine.status().target, cap);
+  CHECK_EQ(rig.phone.level, cap);
+  CHECK_NEAR(rig.engine.status().thermal_limit, limit, 1e-6);
+  CHECK(rig.phone.logged("Thermal: the system limits brightness"));
+  // A dim room stays below the limit.
+  rig.front(5.0f);
+  rig.ticks(20);
+  CHECK(rig.engine.status().target < cap);
+  rig.phone.limit = 1.0f;
+  rig.front(8000.0f);
+  rig.ticks(10);
+  CHECK(rig.phone.level > cap);
+  CHECK(rig.phone.logged("Thermal: no system limit"));
+}
+
+void thermal_limit_covers_sunlight_boost() {
+  Rig rig(20000.0f, curve_level(20000.0f, kMax));
+  rig.ticks(4);
+  CHECK(rig.engine.status().sunlight);
+  rig.phone.limit = 0.37485194f;
+  rig.ticks(4);
+  CHECK_EQ(rig.engine.status().target, static_cast<int>(0.37485194f * kMax + 0.5f));
+  CHECK_EQ(rig.phone.level, rig.engine.status().target);
+}
+
+void thermal_limit_applies_on_wake() {
+  Rig rig(20000.0f, curve_level(20000.0f, kMax));
+  rig.ticks(4);
+  rig.phone.power = 0;
+  rig.ticks(3);
+  rig.phone.limit = 0.25f;
+  rig.phone.power = 1;
+  rig.phone.writes.clear();
+  rig.ticks(3);
+  CHECK(!rig.phone.writes.empty());
+  CHECK(rig.phone.writes.front() <= static_cast<int>(0.25f * kMax + 0.5f));
 }
 
 void manual_mode_releases_node() {
@@ -500,6 +556,30 @@ void rear_sensor_never_lowers_lux() {
   CHECK(rig.engine.status().lux_source == "front");
 }
 
+void torch_keeps_front_sensor() {
+  Rig rig(5.0f, curve_level(5.0f, kMax));
+  rig.phone.back = true;
+  rig.phone.scene_flags = DualSensorPolicy::kAssistBlocked;
+  for (int i = 0; i < 8; ++i) {
+    rig.rear(300.0f);
+    rig.tick();
+  }
+  CHECK(rig.engine.status().lux_source == "front");
+  CHECK_EQ(rig.engine.status().scene, DualSensorPolicy::kAssistBlocked);
+}
+
+void no_system_policy_no_rear_takeover() {
+  Rig rig(5.0f, curve_level(5.0f, kMax));
+  rig.engine.set_dual_sensor(DualSensorConfig{});
+  rig.phone.back = true;
+  for (int i = 0; i < 8; ++i) {
+    rig.rear(300.0f);
+    rig.tick();
+  }
+  CHECK(rig.engine.status().lux_source == "front");
+  CHECK(!rig.engine.status().dual_policy);
+}
+
 void reference_rear_fallback_without_dual_policy() {
   Config config;
   config.dual_sensor = false;
@@ -583,7 +663,10 @@ int main() {
   spikes_are_clamped();
   fast_darkening_uses_short_transition();
   sunlight_boost_after_two_samples();
-  hot_phone_blocks_sunlight();
+  low_battery_blocks_sunlight();
+  system_thermal_limit_caps_output();
+  thermal_limit_covers_sunlight_boost();
+  thermal_limit_applies_on_wake();
   manual_mode_releases_node();
   screen_off_then_wake_writes_curve_at_once();
   proximity_holds_brightness();
@@ -601,6 +684,8 @@ int main() {
   good_curve_needs_time_and_light_change();
   rear_sensor_takes_over_when_brighter();
   rear_sensor_never_lowers_lux();
+  torch_keeps_front_sensor();
+  no_system_policy_no_rear_takeover();
   reference_rear_fallback_without_dual_policy();
   learning_reset();
   reported_anchors_are_followed();

@@ -17,6 +17,7 @@ add_library(brightness_core
   core/android_resources.cpp
   core/brightness_map.cpp
   core/config.cpp
+  core/display_dump.cpp
   core/dual_sensor.cpp
   core/engine.cpp
   core/nit_controller.cpp
@@ -43,8 +44,8 @@ if(ANDROID)
 endif()
 
 if(BUILD_TESTING)
-  foreach(name engine_tests dual_sensor_tests nit_controller_tests brightness_map_tests android_resources_tests settings_tests
-               system_link_tests)
+  foreach(name engine_tests dual_sensor_tests display_dump_tests nit_controller_tests brightness_map_tests
+               android_resources_tests settings_tests system_link_tests)
     add_executable(${name} tests/${name}.cpp)
     target_link_libraries(${name} PRIVATE brightness_core)
     target_compile_options(${name} PRIVATE ${IAB_WARNINGS})

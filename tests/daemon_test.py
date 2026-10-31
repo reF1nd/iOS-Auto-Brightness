@@ -28,8 +28,12 @@ def settings_xml(mode, brightness):
 
 
 def dumpsys(lux, logical, anchors):
-    """dumpsys display: the AOSP default curve and RefactorNitController of both displays."""
+    """dumpsys display: the AOSP default curve, the main display's thermal limit and the
+    RefactorNitController of both displays."""
     text = ("  mConfig=BrightnessConfiguration{[(0.0, 1.0), (30.0, 83.13), (600.0, 126.14), (5000.0, 678.4)], {}, ''}\n\n"
+            "Display Power Controller:\n-------------------------\n  mDisplayId=0\n"
+            "  mCurrentThermalMaxBrightness=600.0\nmThermalMaxBrightness=0.5\n"
+            " mBatteryThermalLimitBrightness=1.0\n\n"
             "Refactor Nit Controller Configuration:\n  mDisplayId=0\n  mIsHaveGoodCurve=false\n"
             f"  mUserLux={lux}\n  mUserLogicalNit={logical}\n"
             f"  anchors=[{anchors}]\n\n"
@@ -86,8 +90,6 @@ def main():
         write(settings, settings_xml(1, 100))
         write(root / 'sys/class/power_supply/battery/capacity', '80\n')
         write(root / 'sys/class/power_supply/battery/status', 'Discharging\n')
-        write(root / 'sys/class/thermal/thermal_zone0/type', 'battery\n')
-        write(root / 'sys/class/thermal/thermal_zone0/temp', '30000\n')
         write(state / 'config.conf', (ROOT / 'module/default.conf').read_text())
         write(state / 'learn.conf', 'user_offset=0.050000\nanchor=10.000 50.0000 1793000000\n')
         # The framework holds a dark drag from before the module started.
@@ -129,6 +131,10 @@ def main():
                 second = status(process, state)
                 return second['heartbeat_ms'] > first['heartbeat_ms'] and second['mode'] == 'auto'
             wait_for(advanced, 5, 'heartbeat did not advance')
+            # The system's thermal limit from dumpsys; no dual sensor policy in this dump.
+            limited = wait_for(lambda: (lambda s: s if s['thermal_limit'] == 0.5 else None)(status(process, state)), 5,
+                               'thermal limit not read')
+            assert not limited['dual_policy'] and limited['scene'] == 0, limited
             # The root manager's module list leads the description with the state.
             wait_for(lambda: shown() == '✅ 运行中 · 自动亮度 · dumpsys 轮询', 5, 'running state not shown')
             assert stat.S_IMODE(prop.stat().st_mode) == 0o644 and prop.read_text().count('\n') == shipped.count('\n')
@@ -136,8 +142,9 @@ def main():
             lux.write_text('3000.0\n')
 
             def followed():
+                # The simulated node is a plain file: a shorter write leaves the old tail.
                 current = int((panel / 'brightness').read_text())
-                return current > 3000 and current
+                return current > 3000 and status(process, state)['current'] == current and current
             locked = wait_for(followed, 30, 'brightness did not follow brighter light')
             third = status(process, state)
             assert third['current'] == locked, (third, locked)

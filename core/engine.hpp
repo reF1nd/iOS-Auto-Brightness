@@ -42,8 +42,11 @@ class Platform {
   virtual float fallback_lux() = 0;
   virtual int local_hour() = 0;
   virtual bool read_battery(int& capacity, bool& charging) = 0;
-  // Highest valid temperature (C) of battery/skin/shell/quiet/back/soc zones, 0 if none.
-  virtual int boost_temperature() = 0;
+  // The framework's thermal brightness limit of the main display as a
+  // brightness in (0, 1]; 1 when it does not limit.
+  virtual float thermal_limit() { return 1.0f; }
+  // DualSensorPolicy::Scene flags of the framework.
+  virtual unsigned scene() { return 0; }
   virtual bool other_display_on() = 0;
   // True once per slider drag the framework learned in auto mode, with the
   // lux and logical nits RefactorNitController.updateLogicalCurve received.
@@ -65,9 +68,10 @@ class Platform {
 
 struct EngineStatus {
   bool automatic = false, screen_on = false, proximity_near = false;
-  bool sunlight = false, fast_dark = false, using_rear = false;
+  bool sunlight = false, fast_dark = false, using_rear = false, dual_policy = false;
   float front_lux = -1, back_lux = -1, input_lux = -1, filtered_lux = 0, smoothed_lux = 0;
-  float alpha = 0, nits = 0;
+  float alpha = 0, nits = 0, thermal_limit = 1;
+  unsigned scene = 0;
   int target = 0, current = 0, poll_ms = 0, slider = -1, mode_setting = -1, max_level = 0;
   int stable_count = 0, bright_count = 0, dark_count = 0, sunlight_count = 0;
   int battery = 100;
@@ -81,6 +85,9 @@ class Engine {
   Engine(Platform& platform, const Config& config, int max_level, const SystemCurve& curve = SystemCurve());
 
   void set_config(const Config& config);
+  // The framework's light sensor configuration; without it the rear sensor
+  // only stands in for a missing front reading.
+  void set_dual_sensor(const DualSensorConfig& config) { dual_.configure(config); }
   // Reference startup before the sensor wait: settings, node lock, warm start.
   void begin(int64_t now);
   void apply_events(const std::vector<SensorEvent>& events);
@@ -114,6 +121,7 @@ class Engine {
   void disable_sensors();
   float select_lux(int64_t now);
   int apply_limits(int level, int64_t now);
+  int apply_thermal_limit(int level);
   void wake(int64_t now);
   void check_good_curve(float lux);
   void follow_system();
@@ -150,8 +158,8 @@ class Engine {
   int poll_ms_ = 800;
   int battery_ = 100;
   bool charging_ = false;
-  int64_t battery_checked_ = 0, thermal_checked_ = 0;
-  int thermal_ = 0;
+  int64_t battery_checked_ = 0;
+  float thermal_limit_ = 1.0f;
 
   // Reference main() locals.
   int mode_ = -1;

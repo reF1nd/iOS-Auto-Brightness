@@ -6,7 +6,9 @@
 
 - 主屏 `panel0-backlight`，`max_brightness` 16383；副屏 `panel1-backlight`，最大 4095，熄灭时 `bl_power` 为 4。
 - 息屏显示（AOD，`doze_always_on=1`）时主屏 `bl_power` 仍为 0、节点为系统的 AOD 亮度（实测 81、103），`card0-DSI-1/dpms` 为 `On`，只有高通的 `sde-conn-2-DSI-1/panel_power_state` 为 2（LP2，亮屏 0、关闭 5）。`debug.tracing.screen_state` 在 AOD 时为 4，但两块屏的 `DisplayPowerController.setScreenState` 都会写它，背屏的状态会盖掉主屏，不能单独依赖。
-- 把主屏节点设为 0444 后，系统自动亮度仍会持续改写背光（实测 75 秒内从 188 变到 6352 再回到 116），显示 HAL 持有已打开的写句柄，文件权限挡不住。v6.8 的 0444 锁定因此不是独占：系统与模块各自在自己的目标变化时写入。
+- 把主屏节点设为 0444 后，系统自动亮度仍会持续改写背光（实测 75 秒内从 188 变到 6352 再回到 116），显示 HAL 持有已打开的写句柄，文件权限挡不住。
+- 反过来，0444 挡住了模块自己（2026-10-31 实测）：sysfs 对没有任何写权限位的属性文件拒绝以写方式打开，root 和全部 capability 也不例外（内核 kernfs 的 `KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK`）。守护进程与 `su` 同为 `u:r:ksu:s0`、CapEff 全开，0444 时 `open(O_WRONLY)` 返回 EACCES，0644 时可写。v6.8 和本模块都是先设 0444、每次写入再重新 `open`，失败即跳过，所以自动模式下的写入从未到达节点，屏幕亮度完全来自系统。阳光模式实测：模块进入阳光并把目标写到 1638（状态里 current=1638），节点一直是系统的 423～504。v7 曾在锁定前打开并保留写句柄（30db660），v8 按 v6.8 重写时没有保留。
+- 保留写句柄的实测（2026-10-31）：锁定前打开并保留句柄后，模块的写入能到达节点，光线稳定时模块写的 421 保持了 25 秒，系统没有覆盖；亮屏时系统按自己的值渐变到 477，模块不再改写。但环境光从 12.9 降到 1.8 lux 时，模块（每 800 ms 一步）和系统（每帧一步）各自渐变、交替覆盖，屏幕明显闪烁。已立即停止模块、恢复 0644 并撤回这项改动。两个写入方同时调光必然互相覆盖，模块要真正控制亮度，只能让系统不再写（独占），或者把调整交给系统去做。
 
 ## 设置
 
@@ -17,7 +19,9 @@
 ## 光感
 
 - 前置 `tcs3760 Ambient Light Sensor Non-wakeup`（类型 5），后置 `tcs3760_sec_back Ambient Light Back Sensor Non-wakeup`（类型 33171055，`xiaomi.sensor.back_lux`），接近 `proximity Proximity Sensor Non-wakeup`（类型 8）。
-- 系统光感参数：短/长时间窗 1000/3000 ms，增亮/变暗防抖 1000 ms，小幅增亮防抖 5000 ms，HBM 门限 4475 lux。阈值曲线见 `core/dual_sensor.cpp`。
+- 系统光感参数：短/长时间窗 1000/3000 ms，加权截距 3000，增亮/变暗防抖 1000 ms，小幅增亮防抖 5000 ms，后置相同，HBM 门限 4475 lux，`MiuiHysteresisLevels` 三条阈值曲线各 15/15/19 个点。模块启动时从 `dumpsys display` 读取这些值，测试用的样例见 `tests/altdb_display.hpp`。
+- 另有 `Optimization light fov Sensor`（类型 33172111）；`dumpsys display` 中主屏的 `mLightSensor` 是类型 5 的前置光感。`ro.miui.support.light.fov` 等属性尚未在真机上查看。
+- 本机是后屏机型，`mUseAonFlareEnabled=true`、`mUseNonUiEnabled=true`；夜间驾驶的最低亮度 `mMinDrivingEnableNit=5.0`。
 
 ## 系统亮度曲线与学习（2026-10-30）
 
@@ -43,8 +47,26 @@
   - 触发条件是 `config_brightness_reset_policy`（框架默认 false，本机由 `MiuiFrameworkResOverlay` 改为 true）且云端 `mResetShortTermModelPolicyDisable=false`，并且息屏 ≥ 30 分钟，或息屏 ≥ 6 分钟且照度变化超过 20 lux。
   - 满足时，亮屏后的第一个有效照度到来时切换到那份锚点（`AutomaticBrightnessController$ShortTermModel.maybeReset`）。
 
+## 温控（2026-10-31）
+
+`dumpsys display` 的 `Thermal Brightness Controller` 段（2026-10-30 转储）：
+
+- 当前条件 Default，机身温度 37.97℃，上限 600 尼特，换算后 `mThermalMaxBrightness=0.37485194`（节点约 6141）；电池温控 `mBatteryThermalLimitBrightness=1.0`（不限）。
+- Default 条件的尼特上限：
+
+  | 环境光 | 温度区间与上限 |
+  |---|---|
+  | 0～5500 lux | 36～38℃ 600，38～40℃ 500，40～42℃ 400，42～45℃ 250，45℃ 以上 160 |
+  | 5500～20000 lux | 36～38℃ 1000，38～40℃ 600，40～42℃ 500，42～45℃ 300，45℃ 以上 200 |
+  | 20000～50000 lux | 36～38℃ 1000，38～40℃ 800，40～42℃ 500，42℃ 以上 360 |
+  | 50000 lux 以上 | 38～40℃ 1000，40～42℃ 600，42～44℃ 400，44℃ 以上 360 |
+
+- 另有游戏（YUANSHEN、XINGTIE、CGAME）、杜比视界、相机杜比和 NTC 条件，由系统按前台场景切换。AOSP 的 `BrightnessThermalClamper` 在本机没有配置（`mDataFromDeviceConfig: null`），实际起作用的是上面这套。
+- 模块取系统算好的上限，不自己读温度（见 [PARITY.md](PARITY.md#系统温控)）。
+
 ## 阳光模式（2026-10-30）
 
+- 已改为跟随系统温控（见上一节），下面是 v6.8 温度门槛在本机的情况。
 - v6.8 的温度门槛只在前 20 个温度区里找名称含 battery/skin/shell/quiet/back/soc 的区。本机共 163 个温度区，第 0～19 个都是处理器相关的温度区（`cpullc-*`、`qmx-*`、`cpu-*`），匹配的只有第 79 个 `quiet_therm`（室内使用时 44.1℃）和第 90 个 `battery`（37.7℃）。因此门槛读到 0℃，永远允许增强。
 - 电量门槛读 `/sys/class/power_supply/battery/capacity` 与 `status`，本机可用。
 - 前后光感为 TCS3760，系统高光系数曲线一直到 72000 lux，说明读数能超过 15000 lux 的触发阈值；后置光感接管后（双光感策略）更容易达到。截至记录时日志里最高 185 lux，户外尚未实测。

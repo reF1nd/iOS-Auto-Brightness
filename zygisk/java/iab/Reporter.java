@@ -23,8 +23,9 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * Runs in system_server after the boot restore. Connects to the daemon's
- * abstract socket and sends the main display's state and the
- * RefactorNitController anchors whenever they change, as
+ * abstract socket and sends the main display's state, the
+ * RefactorNitController anchors, the thermal brightness limit and the dual
+ * sensor scene (SystemState) whenever they change, as
  * "<type> <length>\n<payload>" (core/system_link.hpp reads them). The daemon
  * may send "reset\n" to clear the anchors. Only a root peer is served.
  */
@@ -39,13 +40,18 @@ final class Reporter {
   private final Handler handler;
   private final Object controller;
   private final Object displayController;
+  private final Object impl;
   private Object displays;
   private Method realDisplay;
+  // Set once a ROM lacks what SystemState reads; the daemon then uses dumpsys.
+  private boolean noLimit;
+  private boolean noScene;
 
-  Reporter(Handler handler, Object controller, Object displayController) {
+  Reporter(Handler handler, Object controller, Object displayController, Object impl) {
     this.handler = handler;
     this.controller = controller;
     this.displayController = displayController;
+    this.impl = impl;
   }
 
   void run() throws InterruptedException, ReflectiveOperationException {
@@ -83,6 +89,8 @@ final class Reporter {
     send(out, "hello", Integer.toString(VERSION));
     int state = Integer.MIN_VALUE;
     String anchors = null;
+    String limit = null;
+    int scene = -1;
     StringBuilder command = new StringBuilder();
     byte[] buffer = new byte[64];
     while (true) {
@@ -95,6 +103,16 @@ final class Reporter {
       if (snapshot != null && !snapshot.equals(anchors)) {
         anchors = snapshot;
         send(out, "anchors", snapshot);
+      }
+      String nowLimit = limit();
+      if (nowLimit != null && !nowLimit.equals(limit)) {
+        limit = nowLimit;
+        send(out, "limit", nowLimit);
+      }
+      int nowScene = scene();
+      if (nowScene >= 0 && nowScene != scene) {
+        scene = nowScene;
+        send(out, "scene", Integer.toString(nowScene));
       }
       poll.revents = 0;
       try {
@@ -119,6 +137,28 @@ final class Reporter {
   private int displayState() throws ReflectiveOperationException {
     Display display = (Display) realDisplay.invoke(displays, Display.DEFAULT_DISPLAY);
     return display == null ? Display.STATE_UNKNOWN : display.getState();
+  }
+
+  private String limit() {
+    if (noLimit) return null;
+    try {
+      return Float.toString(SystemState.limit(impl));
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      noLimit = true;
+      Log.w(TAG, "System link: thermal limit not readable", e);
+      return null;
+    }
+  }
+
+  private int scene() {
+    if (noScene) return -1;
+    try {
+      return SystemState.scene(impl);
+    } catch (ReflectiveOperationException | RuntimeException e) {
+      noScene = true;
+      Log.w(TAG, "System link: light sensor scene not readable", e);
+      return -1;
+    }
   }
 
   /** Read on the display handler, so never halfway through a drag; null if it is busy. */
