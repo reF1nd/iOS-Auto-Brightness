@@ -119,10 +119,10 @@ def main():
             assert first['ok'] and first['max'] == 16383, first
             assert first['lux_source'] == 'fallback' and first['settings'] == 'ok', first
             assert first['curve_source'] == 'RefactorNitController' and first['learnable'], first
-            # The earlier learn.conf is not used; the framework's anchors are taken over.
-            assert [a[:3] for a in first['anchors']] == [[0, 7.96, 1], [30, 135, 0], [600, 220, 0], [5000, 1060, 0]], first
-            assert len(first['curve']) == 31 and first['curve'] != first['default_curve'], first
-            assert 'anchor=0 7.959542' in (state / 'learn.conf').read_text()
+            assert not any(a[2] for a in first['anchors']), first
+            assert len(first['curve']) == 31 and first['curve'] == first['default_curve'], first
+            assert not (state / 'learn-touch.conf').exists()
+            assert 'user_offset=' in (state / 'learn.conf').read_text()
             assert stat.S_IMODE((panel / 'brightness').stat().st_mode) == 0o444
             second = locked = None
 
@@ -153,36 +153,16 @@ def main():
                                      stderr=subprocess.STDOUT, text=True)
             assert other.wait(10) == 1 and 'core.lock' in other.stdout.read()
 
-            # A drag: RefactorNitController learns it, the framework persists
-            # the slider and shows the chosen level on the panel.
-            wait_for(lambda: status(process, state)['poll_ms'] >= 1600, 30, 'brightness did not settle')
-            chosen = int((panel / 'brightness').read_text()) + 1500
+            # Settings and the OEM marker can change together without a touch.
             write(bin_dir / 'dumpsys', dumpsys(3000.0, 500.0, dark))
-            (panel / 'brightness').chmod(0o644)
-            write(panel / 'brightness', f'{chosen}\n')
-            (panel / 'brightness').chmod(0o444)
             write(settings, settings_xml(1, 120))
-            wait_for(lambda: 'anchor=3000 500 2 1\n' in (state / 'learn.conf').read_text(), 15, 'drag not learned')
-            learned = status(process, state)
-            assert learned['last_learning'] == 'learned', learned
-            assert learned['user_lux'] == 3000.0 and learned['user_logical'] == 500.0, learned
-            dragged = [a for a in learned['anchors'] if a[2]]
-            assert [a[:2] for a in dragged] == [[0, 7.96], [3000.0, 500.0]], learned
-            assert learned['curve'] != learned['default_curve'], learned
-            # The dragged level stays until the panel settles, then the curve
-            # through the anchor (x0.95 between 18:00 and 06:00) takes over.
-            assert int((panel / 'brightness').read_text()) == chosen
-            night = learned['local_hour'] >= 18 or learned['local_hour'] < 6
-            expected = int(dragged[1][3] * (0.95 if night else 1.0))
-
-            def through_anchor():
-                now = status(process, state)
-                # The smoothed lux is still creeping up to 3000 at the slow rate.
-                return abs(now['target'] - expected) <= expected * 0.08 and now['current'] == now['target'] and now
-            wait_for(through_anchor, 30, 'curve did not follow the learned anchor')
+            wait_for(lambda: status(process, state)['slider'] == 120, 15, 'settings change not observed')
+            assert not any(a[2] for a in status(process, state)['anchors'])
+            assert not (state / 'learn-touch.conf').exists()
 
             process.send_signal(signal.SIGUSR1)
-            wait_for(lambda: 'order=0\nuser=-1 -1\n' in (state / 'learn.conf').read_text(), 5,
+            saved = state / 'learn-touch.conf'
+            wait_for(lambda: saved.is_file() and 'order=0\nuser=-1 -1\n' in saved.read_text(), 5,
                      'learning reset not saved')
 
             settings.write_text(settings_xml(0, 100))
@@ -210,10 +190,8 @@ def main():
             log.close()
         text = (base / 'daemon.log').read_text()
         for needle in ('Fallback(sysfs)', 'Mode: AUTO', 'Mode: MANUAL', 'Learn: reset', 'Stopped',
-                       'Learn: learn.conf of an older format is not used', 'Learn: took over 1 dragged anchors from the system',
                        'framework-ext-res.apk: cannot open; using the altdb values',
-                       'Curve check: defaults vs BrightnessConfiguration max 0.2% at 30 lux',
-                       'Learn: 3000.0 lux -> 500.00 logical nits'):
+                       'Curve check: defaults vs BrightnessConfiguration max 0.2% at 30 lux'):
             assert needle in text, (needle, text)
     print('daemon_end_to_end: ok')
 

@@ -74,6 +74,7 @@ if [ "$(cat "$STATE/first-install-boot" 2>/dev/null)" = "$boot_id" ]; then
   END_STATE='⏳ 重启后生效'
   exit 0
 fi
+sh "$MODDIR/hot-update.sh" record-boot || echo 'Cannot identify active Zygisk payload for hot updates' >> "$LOG"
 printf '%s\n' "$boot_id" > "$STATE/activated-boot"
 for id in autobrightness LiveDisplay lux-brightness adaptive-brightness brightness-controller dimmer cf.lumen twilight; do
   other="/data/adb/modules/$id"

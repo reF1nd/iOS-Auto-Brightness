@@ -14,7 +14,7 @@
 
 - `/data/system/users/0/settings_system.xml` 为 ABX 格式（约 140 KB），`screen_brightness` 为 0～255。
 - 自动亮度下，系统会随环境光改写 `screen_brightness`（实测未触碰亮度条时依次为 17、36、255、27、19）。
-- 拖动亮度条后，`dumpsys display` 的 `mUserLux`、`mUserBrightness`（AOSP 映射）从 `-1.0`/`NaN` 变为拖动时的照度与亮度，主屏 `Refactor Nit Controller Configuration` 段的 `mUserLux`、`mUserLogicalNit` 变为拖动时的照度与逻辑尼特；系统自动改写不会改变它们。
+- 拖动亮度条后，`dumpsys display` 的 `mUserLux`、`mUserBrightness`（AOSP 映射）从 `-1.0`/`NaN` 变为拖动时的照度与亮度，主屏 `Refactor Nit Controller Configuration` 段的 `mUserLux`、`mUserLogicalNit` 变为拖动时的照度与逻辑尼特；这些字段表示系统记录的调节，无法单独确认手指操作。
 
 ## 光感
 

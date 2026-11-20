@@ -40,9 +40,9 @@ struct FakePhone : Platform {
   int64_t elapsed = 1000000;
   std::string saved;
   int saves = 0;
+  bool writable_learning = true;
   std::vector<std::string> lines;
   // The Zygisk reporter.
-  bool follow = false;
   std::string reported;
   bool reported_new = false;
   int system_resets = 0;
@@ -83,12 +83,13 @@ struct FakePhone : Platform {
     return true;
   }
   int64_t elapsed_ms() override { return elapsed; }
-  void save_learning(const std::string& text) override {
+  bool save_learning(const std::string& text) override {
+    if (!writable_learning) return false;
     saved = text;
     ++saves;
+    return true;
   }
   void log(const std::string& line) override { lines.push_back(line); }
-  bool follows_system() override { return follow; }
   bool system_anchors(std::string& text) override {
     if (!reported_new) return false;
     reported_new = false;
@@ -607,19 +608,19 @@ void learning_reset() {
 
 void reported_anchors_are_followed() {
   Rig rig = bright_drag();
-  rig.phone.follow = true;
-  // The framework applies its good curve itself; ours stays out of it.
-  screen_off(rig, 31 * 60 * 1000, 500.0f);
-  CHECK(rig.engine.curve().controller().has_good_curve());
   NitController system(rig.engine.curve().controller());
+  NitController spurious(system);
+  spurious.drag(162.0f, 153.104f);
+  int previous = rig.phone.saves;
+  rig.phone.report(spurious);
+  settle(rig, 1);
+  CHECK(rig.engine.curve().controller().same(system));
+  CHECK_EQ(rig.phone.saves, previous);
   CHECK(system.use_good_curve());
   rig.phone.report(system);
   settle(rig, 1);
-  CHECK(!rig.engine.curve().controller().has_good_curve());
+  CHECK(rig.engine.curve().controller().same(system));
   CHECK(rig.engine.status().last_learning == "good_curve");
-  CHECK_NEAR(rig.engine.curve().controller().logical(500.0f), 421.134, 1e-3);
-  CHECK(rig.phone.saved.find("good_curve=0") != std::string::npos);
-  CHECK(rig.phone.logged("following the system's anchors (good curve, 1 dragged)"));
   // The same anchors again change nothing.
   const int saves = rig.phone.saves;
   rig.phone.report(system);
@@ -633,23 +634,14 @@ void reported_anchors_are_followed() {
   settle(rig, 2);
   CHECK_EQ(rig.phone.saves, saves + 1);
   CHECK(rig.engine.curve().controller().same(dragged));
-  // A reset in the framework is followed too.
+  rig.phone.writable_learning = false;
+  drag(rig, 700.0f, 450.0f, 500);
+  CHECK(rig.engine.status().last_learning == "save_failed");
+  CHECK(rig.engine.curve().controller().same(dragged));
+  // Losing system anchors is not a user request to forget verified drags.
   rig.phone.report(NitController());
   settle(rig, 1);
-  CHECK_EQ(user_anchors(rig.engine), 0);
-  CHECK(rig.engine.status().last_learning == "reset");
-  // Reports made for another ROM's defaults, or with learning off, are left alone.
-  RefactorConfig other;
-  other.default_curve[3] = 140.0f;
-  rig.phone.report(NitController(other));
-  settle(rig, 1);
-  CHECK(rig.engine.status().last_learning == "reset");
-  Config off;
-  off.learning_enabled = false;
-  rig.engine.set_config(off);
-  rig.phone.report(dragged);
-  settle(rig, 1);
-  CHECK_EQ(user_anchors(rig.engine), 0);
+  CHECK(rig.engine.curve().controller().same(dragged));
 }
 
 }  // namespace

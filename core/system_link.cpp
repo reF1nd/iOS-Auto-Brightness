@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -81,6 +82,7 @@ unsigned SystemLink::drop(unsigned events) {
   scene_ = -1;
   buffer_.clear();
   anchors_.clear();
+  drags_.clear();
   return events;
 }
 
@@ -146,6 +148,13 @@ unsigned SystemLink::parse() {
       if (state != state_) state_ = state, events |= kState;
     } else if (type == "anchors") {
       if (payload != anchors_) anchors_ = payload, events |= kAnchors;
+    } else if (type == "drag") {
+      long long time;
+      float lux, nit;
+      char tail;
+      if (std::sscanf(payload.c_str(), "%lld %f %f %c", &time, &lux, &nit, &tail) != 3 ||
+          time < 0 || !std::isfinite(lux) || lux < 0 || !std::isfinite(nit) || nit <= 0) return drop(kRejected);
+      if (drags_.size() < 32) drags_.push_back({time, lux, nit});
     } else if (type == "limit") {
       char* end = nullptr;
       const float limit = std::strtof(payload.c_str(), &end);
@@ -160,7 +169,20 @@ unsigned SystemLink::parse() {
   }
 }
 
+bool SystemLink::take_drag(int64_t now, float& lux, float& nit) {
+  while (!drags_.empty()) {
+    const Drag drag = drags_.front();
+    drags_.pop_front();
+    if (drag.time > now || now - drag.time > 3000) continue;
+    lux = drag.lux;
+    nit = drag.nit;
+    return true;
+  }
+  return false;
+}
+
 bool SystemLink::send_reset() {
+  drags_.clear();
   if (!hello_) return false;
   static constexpr char kReset[] = "reset\n";
   return send(peer_fd_, kReset, sizeof kReset - 1, MSG_NOSIGNAL) == static_cast<ssize_t>(sizeof kReset - 1);

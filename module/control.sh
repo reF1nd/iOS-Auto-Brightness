@@ -52,7 +52,9 @@ case "$1" in
     if fresh_status >/dev/null; then echo '{"health":"healthy"}'; else echo '{"health":"offline"}'; fi
     exit 0 ;;
   upgrade-ready)
-    if snapshot=$(fresh_status); then
+    # BusyBox ash supports -ef, including through /proc/PID/exe after a directory swap.
+    # shellcheck disable=SC3013
+    if snapshot=$(fresh_status) && pid=$(core_pid) && [ "/proc/$pid/exe" -ef "$DAEMON" ]; then
       beat=$(printf '%s' "$snapshot" | sed -n 's/.*"heartbeat_ms":\([0-9]*\).*/\1/p')
       printf '{"ready":true,"heartbeat_ms":%s}\n' "$beat"
     else
@@ -81,7 +83,7 @@ case "$1" in
     if pid=$(core_pid); then
       kill -USR1 "$pid" 2>/dev/null
     else
-      rm -f "$STATE/learn.conf"
+      rm -f "$STATE/learn-touch.conf"
     fi
     echo '{"ok":true}'
     exit 0 ;;

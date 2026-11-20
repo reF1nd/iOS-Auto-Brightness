@@ -43,15 +43,15 @@ v6.8 的曲线（`ios_curve` 0x5dd4：分 7 段把 lux 换算成 nits；`nits_tb
 |---|---|---|---|
 | 设置读取 | `read_settings_xml_int`（0x6068）只读前 8191 字节并查找 `name="..."` | `settings_reader.cpp` 完整解析 ABX（`android.util.BinaryXmlSerializer`）与文本 XML | Android 12 起该文件默认是 ABX，v6.8 读不到，`cached_auto` 保持 −1 被当作自动模式，亮度条值固定为初始的 128 |
 | 亮度曲线 | `ios_curve` 与 52 点面板表 | 系统的自动亮度曲线（`system_curve.cpp`） | 用户要求换成系统内置曲线 |
-| 学习触发 | 亮度条变化即学习 | 主屏 `RefactorNitController` 的 `mUserLux`/`mUserLogicalNit` 变化即为一次拖动（设置文件变化时检查，否则每 8 秒），立即按系统规则更新锚点；节点值稳定 1 秒前不写入；`learning_enabled=0` 关闭 | HyperOS 自动亮度会随环境光改写 `screen_brightness`；暗处拖动时它只在个位数内变化，达不到 10 格 |
+| 学习触发 | 亮度条变化即学习 | 主屏滑块上的手指拖动与系统新锚点配对后，立即按系统规则更新锚点；节点值稳定 1 秒前不写入；`learning_enabled=0` 关闭 | HyperOS 自动亮度会随环境光改写 `screen_brightness`；暗处拖动时它只在个位数内变化，达不到 10 格 |
 | 学习方式 | 全局偏移，每次吸收 10% | `nit_controller.cpp` 完整移植系统的 3 点锚点学习与 good curve | 用户要求完全按系统的学习逻辑 |
-| 学习保存 | 偏移写文件，重启保留 | 锚点写 `learn.conf`，重启保留；没有可用记录时启动接管系统当前的锚点（`dumpsys` 的 `anchors=`） | 系统重启后会清空锚点；保留是用户最初的要求。装有 Zygisk 时开机把 `learn.conf` 写回系统，否则系统重启后按默认曲线写入 |
+| 学习保存 | 偏移写文件，重启保留 | 已确认的锚点写入 `learn-touch.conf`，首次启用时从默认锚点开始 | 系统重启后会清空锚点；保留是用户最初的要求。装有 Zygisk 时开机把已确认的锚点写回系统，否则系统重启后按默认曲线写入 |
 | 后置光感 | 仅前置为负时使用 | `dual_sensor.cpp` 按 HyperOS `DualSensorPolicy` 选择照度，参数取自运行中系统的 `dumpsys display`，场景判断由 Zygisk 上报；系统没有该策略或 `dual_sensor=0` 时恢复 v6.8 行为 | 按用户要求参考系统原生的前后光感逻辑 |
 | 温控 | 阳光模式前检查前 20 个温度区，超过 45℃ 不增强 | 去掉温度检查；所有输出不超过系统的温控上限（`DisplayPowerControllerImpl.mThermalMaxBrightness` 与 `mBatteryThermalLimitBrightness`） | 用户要求温控直接用系统的；v6.8 的检查在本机从未生效 |
 | 阳光渐变 | 阳光模式下只要目标与当前值不同，每轮都重新开始 1000 ms 渐变（0x4e78），并在起点采样，采到的就是当前值；快速变暗的 200 ms 渐变同样如此 | 目标不变时沿用进行中的渐变，与其他渐变一致：进入后第一轮不动，下一轮写到约 98%，再下一轮到位 | v6.8 在阳光模式期间从不写入，增强没有生效，节点停在进入前的值或系统写的值 |
 | 前置光感 | 默认光感（类型 5） | 与系统一致：`ro.miui.support.light.fov` 为 1 时改用 FOV 光感（类型 33172111） | 跟随系统实际读取的光感 |
 | 启动回差 | 尚无上次目标（0）时，与当前亮度比较落入回差就把目标换成 0，写入最低亮度后再回升 | 沿用当前亮度 | 明显缺陷，只出现在启动后的第一轮 |
-| 路径 | `/data/local/tmp/ios_brightness*` | `/data/adb/ios_auto_brightness/`，安装时迁移 v6.8 的配置与偏移 | 私有目录与 WebUI |
+| 路径 | `/data/local/tmp/ios_brightness*` | `/data/adb/ios_auto_brightness/`，安装时迁移 v6.8 的配置 | 私有目录与 WebUI |
 | 背光节点 | 固定 `panel0-backlight` | 优先 `panel0-backlight`，否则第一个有效背光设备 | 兼容其他设备 |
 
 ## 系统亮度曲线与学习

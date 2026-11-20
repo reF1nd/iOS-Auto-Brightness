@@ -130,7 +130,7 @@ async function refresh(loadConfig = false, announce = false) {
       card('亮度曲线', s.learnable ? 'HyperOS 逻辑尼特曲线' : '系统默认曲线（不学习）'),
       card('系统联动', s.system_link === 'zygisk' ? 'Zygisk 实时上报' : 'dumpsys 轮询'));
     const last = {none: '尚未触发', learned: '已记住一次拖动', disabled: '学习已关闭', reset: '已清除',
-      unsupported: '本机曲线不支持学习', good_curve: '息屏后已回落到系统建议亮度'}[s.last_learning] ?? s.last_learning;
+      save_failed: '学习记录保存失败', unsupported: '本机曲线不支持学习', good_curve: '息屏后已回落到系统建议亮度'}[s.last_learning] ?? s.last_learning;
     const anchors = (s.anchors ?? []).filter(([, , user]) => user).map(([at, logical, , level]) => `${at.toFixed(1)} lux → 亮度条 ${logical.toFixed(1)} 逻辑尼特（节点 ${level}）`);
     const good = s.good_curve ? ' · 最近一次拖动高于系统建议亮度，息屏较久后会回落' : '';
     $('learning').textContent = s.learnable

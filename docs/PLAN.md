@@ -17,7 +17,7 @@ v8 起放弃 v7 的 Java 桥接与自研调光算法，改为按闭源 v6.8 守�
 - `core/settings_reader.*`：ABX 与文本 XML 设置读取。
 - `core/daemon.cpp`：NDK 光感、背光、电量、温度、信号与状态输出。
 - `module/`：监督进程、控制脚本、WebUI。
-- `zygisk/`：开机时把锚点写回 system_server 的 Zygisk 库和 dex。
+- `zygisk/`：在 SystemUI 和设置页观察手势、在 system_server 核对主屏锚点并恢复已学习曲线的 Zygisk 库和 dex。
 
 ## 待办
 

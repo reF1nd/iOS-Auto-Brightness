@@ -141,12 +141,6 @@ std::string refactor_section(const std::string& dump) {
   return "";
 }
 
-float dump_value(const std::string& block, const char* key) {
-  const size_t at = block.find(key);
-  if (at == std::string::npos) return NAN;
-  return std::strtof(block.c_str() + at + std::strlen(key), nullptr);
-}
-
 // ASensorEvent layout of <android/sensor.h>.
 struct NativeSensorEvent {
   int32_t version, sensor, type, reserved0;
@@ -448,50 +442,24 @@ class AndroidPlatform final : public iab::Platform {
     return on;
   }
   bool user_drag(float& lux, float& logical) override {
-    // The reporter sends mUserLux/mUserLogicalNit with every anchor change.
-    if (link_.connected()) {
-      if (link_.anchors().empty()) return false;
-      float user_lux = 0.0f, user_logical = 0.0f;
-      const std::string point = link_point(link_.anchors(), user_lux, user_logical);
-      return changed(point, user_lux, user_logical, lux, logical);
-    }
-    // dumpsys display is large: query it when the settings file changed (a
-    // drag persists the slider) and otherwise every 8 s.
-    const int64_t now = monotonic_ms();
-    struct stat info{};
-    long long stamp = 0;
-    if (stat(settings_path().c_str(), &info) == 0) {
-#ifdef __APPLE__
-      const long nanoseconds = info.st_mtimespec.tv_nsec;
-#else
-      const long nanoseconds = info.st_mtim.tv_nsec;
-#endif
-      stamp = (static_cast<long long>(info.st_mtime) * 1000000000LL + nanoseconds) ^
-              static_cast<long long>(info.st_size);
-    }
-    if (stamp == settings_stamp_ && now - user_checked_ < 8000) return false;
-    settings_stamp_ = stamp;
-    user_checked_ = now;
-    float user_lux = 0.0f, user_logical = 0.0f;
-    const std::string point = user_point(display_dump(), user_lux, user_logical);
-    return changed(point, user_lux, user_logical, lux, logical);
+    return link_.take_drag(boottime_ms(), lux, logical);
   }
-  bool follows_system() override { return link_.connected() && !link_.anchors().empty(); }
   bool system_anchors(std::string& text) override {
-    if (!follows_system() || link_.anchors() == seen_anchors_) return false;
+    if (!link_.connected() || link_.anchors().empty() || link_.anchors() == seen_anchors_) return false;
     text = seen_anchors_ = link_.anchors();
     return true;
   }
   void reset_system_anchors() override { link_.send_reset(); }
   int64_t elapsed_ms() override { return boottime_ms(); }
-  void save_learning(const std::string& text) override {
-    const std::string path = g_state_dir + "/learn.conf", temporary = path + ".tmp";
+  bool save_learning(const std::string& text) override {
+    const std::string path = g_state_dir + "/learn-touch.conf", temporary = path + ".tmp";
     FILE* file = std::fopen(temporary.c_str(), "w" IAB_CLOEXEC);
-    if (!file) return;
-    std::fwrite(text.data(), 1, text.size(), file);
-    const bool ok = std::fflush(file) == 0 && fsync(fileno(file)) == 0;
-    std::fclose(file);
-    if (ok) rename(temporary.c_str(), path.c_str());
+    if (!file) return false;
+    const bool ok = std::fwrite(text.data(), 1, text.size(), file) == text.size() &&
+                    std::fflush(file) == 0 && fsync(fileno(file)) == 0;
+    if (std::fclose(file) == 0 && ok && rename(temporary.c_str(), path.c_str()) == 0) return true;
+    unlink(temporary.c_str());
+    return false;
   }
   void log(const std::string& line) override { log_line(line.c_str()); }
 
@@ -503,11 +471,6 @@ class AndroidPlatform final : public iab::Platform {
     if (std::isfinite(limit)) dumped_limit_ = limit;
     return dump;
   }
-  void prime_user_point(const std::string& dump) {
-    float lux = 0.0f, logical = 0.0f;
-    last_user_point_ = user_point(dump, lux, logical);
-    user_checked_ = monotonic_ms();
-  }
   const std::string& settings_status() const { return settings_status_; }
   const char* link_status() const { return link_.connected() ? "zygisk" : "dumpsys"; }
   std::string backlight_file(const char* name) const { return backlight_ + "/" + name; }
@@ -515,25 +478,6 @@ class AndroidPlatform final : public iab::Platform {
  private:
   // Display.STATE_* values the reporter sends.
   static constexpr int kDisplayOn = 2, kDisplayVr = 5, kDisplayOnSuspend = 6;
-
-  // mUserLux/mUserLogicalNit of RefactorNitController change only when a
-  // drag reaches updateLogicalCurve, never on automatic slider rewrites.
-  static std::string user_point(const std::string& dump, float& lux, float& logical);
-  static std::string link_point(const std::string& anchors, float& lux, float& logical);
-  static std::string point_text(float lux, float logical) {
-    if (!std::isfinite(lux) || !std::isfinite(logical)) return "";
-    char point[64];
-    std::snprintf(point, sizeof point, "%.7g %.7g", lux, logical);
-    return point;
-  }
-  // Both sources format the point alike, so switching between them is no drag.
-  bool changed(const std::string& point, float user_lux, float user_logical, float& lux, float& logical) {
-    if (point.empty()) return false;
-    const bool moved = point != last_user_point_ && user_lux >= 0.0f && user_logical >= 0.0f;
-    last_user_point_ = point;
-    if (moved) lux = user_lux, logical = user_logical;
-    return moved;
-  }
 
   std::string backlight_;
   Sensors& sensors_;
@@ -547,25 +491,8 @@ class AndroidPlatform final : public iab::Platform {
   float dumped_limit_ = NAN;
   std::string settings_path() const { return device_path("/data/system/users/0/settings_system.xml"); }
 
-  std::string last_user_point_;
-  long long settings_stamp_ = 0;
-  int64_t user_checked_ = 0;
   std::string settings_status_ = "unread";
 };
-
-std::string AndroidPlatform::user_point(const std::string& dump, float& lux, float& logical) {
-  const std::string block = refactor_section(dump);
-  if (block.empty()) return "";
-  lux = dump_value(block, "mUserLux=");
-  logical = dump_value(block, "mUserLogicalNit=");
-  return point_text(lux, logical);
-}
-
-std::string AndroidPlatform::link_point(const std::string& anchors, float& lux, float& logical) {
-  const size_t at = anchors.find("\nuser=");
-  if (at == std::string::npos || std::sscanf(anchors.c_str() + at + 6, "%f %f", &lux, &logical) != 2) return "";
-  return point_text(lux, logical);
-}
 
 // Only system_server may report: uid 1000 and its process name.
 bool system_server_peer(int fd) {
@@ -1003,7 +930,6 @@ int run(const std::string& state, const std::string& prop) {
   AndroidPlatform platform(backlight, sensors, link, main_factor);
   if (!sensors.ndk()) platform.discover_fallback();
   const std::string dump = platform.display_dump();
-  platform.prime_user_point(dump);
   iab::PanelMap panel = read_panel_map(dump);
   if (!panel.valid()) {
     log_line("Panel map: dumpsys unavailable, using the altdb display config");
@@ -1015,28 +941,21 @@ int run(const std::string& state, const std::string& prop) {
   {
     std::string saved;
     bool restored = false;
-    if (read_text(state + "/learn.conf", saved, 16384) && !saved.empty()) {
+    if (read_text(state + "/learn-touch.conf", saved, 16384) && !saved.empty()) {
       iab::NitController& controller = curve.controller();
       restored = controller.parse(saved);
       if (restored) {
         std::snprintf(text, sizeof text, "Learn: %d dragged anchors restored%s", controller.user_anchors(),
                       controller.has_good_curve() ? " (good curve pending)" : "");
       } else if (saved.find("version=2") == std::string::npos) {
-        std::snprintf(text, sizeof text, "Learn: learn.conf of an older format is not used");
+        std::snprintf(text, sizeof text, "Learn: learn-touch.conf of an older format is not used");
       } else {
-        std::snprintf(text, sizeof text, "Learn: learn.conf was made for other default anchors; starting over");
+        std::snprintf(text, sizeof text, "Learn: learn-touch.conf was made for other default anchors; starting over");
       }
       log_line(text);
     }
-    // Nothing of ours yet: take over the drags the framework holds since boot.
-    if (!restored && curve.learnable() && curve.controller().adopt(refactor_section(dump))) {
-      std::snprintf(text, sizeof text, "Learn: took over %d dragged anchors from the system",
-                    curve.controller().user_anchors());
-      log_line(text);
-      platform.save_learning(curve.controller().serialize());
-    }
     // The framework forgets its anchors on reboot and then writes its default
-    // curve in between our writes. The Zygisk library puts learn.conf back
+    // curve in between our writes. The Zygisk library puts learn-touch.conf back
     // into it at boot; report whether the two agree.
     if (curve.learnable() && curve.controller().user_anchors() > 0) {
       iab::NitController system(curve.controller().config());
@@ -1126,9 +1045,8 @@ int run(const std::string& state, const std::string& prop) {
     if (now - last_tick >= engine.poll_ms()) {
       engine.tick(now);
       last_tick = now;
-    } else {
-      engine.check_learning(now);
     }
+    engine.check_learning(now);
     if (g_dump_status) {
       g_dump_status = 0;
       write_status(engine, platform, config, backlight, curve_source, started, monotonic_ms());

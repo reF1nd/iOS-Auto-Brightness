@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Zygisk part of the module. HyperOS forgets its brightness anchors on reboot;
-// this hands learn.conf and anchors.dex to system_server, where
+// this hands learn-touch.conf and anchors.dex to system_server, where
 // iab.AnchorRestore writes the anchors back into RefactorNitController and
-// then reports the display state and anchors to the daemon. Apps unload the
-// library at once. The companion runs as root: it reads the files
+// then reports the display state and anchors to the daemon. SystemUI and Settings observe their brightness sliders;
+// all processes unload the native library after specialization. The companion runs as root: it reads the files
 // system_server may not, and stops handing them over when system_server keeps
 // restarting, in case the restore is what crashes it.
 #include <android/log.h>
@@ -117,18 +117,29 @@ bool allowed_this_start() {
   return false;
 }
 
-// Sends learn.conf (empty when missing; the reporter runs either way) and the dex.
+// Only system_server needs the learned curve and counts toward its boot guard.
+// App processes request just the dex before specialization.
 void companion(int fd) {
+  char request;
+  if (!receive_all(fd, &request, sizeof request)) return;
   std::string learn, dex;
+  if (request == 'U') {
+    if (access((std::string(kState) + "/zygisk.disabled").c_str(), F_OK) != 0 && !read_file(kDex, dex, kMaxDex)) {
+      dex.clear();
+    }
+    send_blob(fd, dex);
+    return;
+  }
+  if (request != 'S') return;
   if (!allowed_this_start() || !read_file(kDex, dex, kMaxDex)) dex.clear();
-  if (dex.empty() || !read_file(std::string(kState) + "/learn.conf", learn, kMaxLearn) ||
+  if (dex.empty() || !read_file(std::string(kState) + "/learn-touch.conf", learn, kMaxLearn) ||
       learn.compare(0, 10, "version=2\n") != 0) {
     learn.clear();
   }
   if (send_blob(fd, learn)) send_blob(fd, dex);
 }
 
-// learn.conf is passed as a Java string; modified UTF-8 is only safe for ASCII.
+// learn-touch.conf is passed as a Java string; modified UTF-8 is only safe for ASCII.
 bool printable(const std::string& text) {
   for (const char c : text) {
     if (c != '\n' && (c < 0x20 || c > 0x7e)) return false;
@@ -143,7 +154,7 @@ bool failed(JNIEnv* env, const char* step) {
   return true;
 }
 
-void load(JNIEnv* env, const std::string& learn, const std::string& dex) {
+void load(JNIEnv* env, const char* class_name, const std::string& argument, const std::string& dex) {
   if (env->PushLocalFrame(16) != 0) {
     env->ExceptionClear();
     return;
@@ -162,17 +173,17 @@ void load(JNIEnv* env, const std::string& learn, const std::string& dex) {
       if (!failed(env, "method lookup") && wrap && system && create && find) {
         jobject buffer = env->CallStaticObjectMethod(buffers, wrap, bytes);
         jobject parent = failed(env, "ByteBuffer.wrap") ? nullptr : env->CallStaticObjectMethod(loaders, system);
-        jobject loader = !parent || failed(env, "system class loader") ? nullptr
+        jobject loader = failed(env, "system class loader") || !parent ? nullptr
                                                                         : env->NewObject(memory, create, buffer, parent);
-        jobject found = !loader || failed(env, "dex load")
+        jobject found = failed(env, "dex load") || !loader
                             ? nullptr
-                            : env->CallObjectMethod(loader, find, env->NewStringUTF("iab.AnchorRestore"));
+                            : env->CallObjectMethod(loader, find, env->NewStringUTF(class_name));
         auto* restore = static_cast<jclass>(found);
-        jmethodID start = !restore || failed(env, "class load")
+        jmethodID start = failed(env, "class load") || !restore
                               ? nullptr
                               : env->GetStaticMethodID(restore, "start", "(Ljava/lang/String;)V");
-        if (start && !failed(env, "start lookup")) {
-          env->CallStaticVoidMethod(restore, start, env->NewStringUTF(learn.c_str()));
+        if (!failed(env, "start lookup") && start) {
+          env->CallStaticVoidMethod(restore, start, env->NewStringUTF(argument.c_str()));
           failed(env, "start");
         }
       }
@@ -188,8 +199,23 @@ class Module : public zygisk::ModuleBase {
     env_ = env;
   }
 
-  void preAppSpecialize(zygisk::AppSpecializeArgs*) override {
+  void preAppSpecialize(zygisk::AppSpecializeArgs* args) override {
     api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+    if (!args->nice_name || args->uid >= 100000) return;  // Only the primary Android user.
+    const char* name = env_->GetStringUTFChars(args->nice_name, nullptr);
+    if (!name) { env_->ExceptionClear(); return; }
+    process_ = name;
+    env_->ReleaseStringUTFChars(args->nice_name, name);
+    if (process_ != "com.android.systemui" && process_ != "com.android.settings") return;
+    const int fd = api_->connectCompanion();
+    if (fd < 0) return;
+    if (!send_all(fd, "U", 1) || !receive_blob(fd, dex_, kMaxDex)) dex_.clear();
+    close(fd);
+  }
+
+  void postAppSpecialize(const zygisk::AppSpecializeArgs*) override {
+    if (!dex_.empty()) load(env_, "iab.SliderObserver", process_, dex_);
+    std::string().swap(dex_);
   }
 
   void preServerSpecialize(zygisk::ServerSpecializeArgs*) override {
@@ -197,14 +223,14 @@ class Module : public zygisk::ModuleBase {
     api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     const int fd = api_->connectCompanion();
     if (fd < 0) return;
-    if (!receive_blob(fd, learn_, kMaxLearn) || !receive_blob(fd, dex_, kMaxDex) || !printable(learn_)) {
+    if (!send_all(fd, "S", 1) || !receive_blob(fd, learn_, kMaxLearn) || !receive_blob(fd, dex_, kMaxDex) || !printable(learn_)) {
       learn_.clear(), dex_.clear();
     }
     close(fd);
   }
 
   void postServerSpecialize(const zygisk::ServerSpecializeArgs*) override {
-    if (!dex_.empty()) load(env_, learn_, dex_);
+    if (!dex_.empty()) load(env_, "iab.AnchorRestore", learn_, dex_);
     std::string().swap(learn_);
     std::string().swap(dex_);
   }
@@ -212,7 +238,7 @@ class Module : public zygisk::ModuleBase {
  private:
   zygisk::Api* api_ = nullptr;
   JNIEnv* env_ = nullptr;
-  std::string learn_, dex_;
+  std::string learn_, dex_, process_;
 };
 
 }  // namespace

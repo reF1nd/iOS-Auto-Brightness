@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Receiving end of zygisk/java/iab/Reporter.java. system_server connects to
 // the abstract socket "iab_brightness" and sends "<type> <length>\n<payload>"
-// messages: hello (protocol version), state (Display.STATE_* of display 0),
+// messages: drag (elapsed time, lux and logical nits of a confirmed slider commit),
+// hello (protocol version), state (Display.STATE_* of display 0),
 // anchors (RefactorNitController in learn.conf form), limit (the thermal
 // brightness limit of display 0, 0..1) and scene (DualSensorPolicy::Scene
 // flags). The daemon only sends "reset\n". Without a peer the daemon falls
 // back to dumpsys and bl_power.
 #pragma once
 
+#include <cstdint>
+#include <deque>
 #include <functional>
 #include <string>
 #include <vector>
@@ -55,12 +58,15 @@ class SystemLink {
   // -1 until reported.
   int scene() const { return scene_; }
   bool send_reset();
+  bool take_drag(int64_t now, float& lux, float& nit);
 
  private:
   unsigned drop(unsigned events);
   unsigned read_peer();
   unsigned parse();
 
+  struct Drag { int64_t time; float lux, nit; };
+  std::deque<Drag> drags_;
   PeerCheck check_;
   int listen_fd_ = -1, peer_fd_ = -1;
   bool hello_ = false;

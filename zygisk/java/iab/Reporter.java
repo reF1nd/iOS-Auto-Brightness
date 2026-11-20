@@ -15,6 +15,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
@@ -44,6 +45,8 @@ final class Reporter {
   private Object displays;
   private Method realDisplay;
   // Set once a ROM lacks what SystemState reads; the daemon then uses dumpsys.
+  private final ArrayBlockingQueue<String> confirmed = new ArrayBlockingQueue<>(32);
+  private DragReceiver drags;
   private boolean noLimit;
   private boolean noScene;
 
@@ -55,6 +58,7 @@ final class Reporter {
   }
 
   void run() throws InterruptedException, ReflectiveOperationException {
+    drags = DragReceiver.register(controller, handler, confirmed);
     Class<?> global = Class.forName("android.hardware.display.DisplayManagerGlobal");
     displays = global.getMethod("getInstance").invoke(null);
     realDisplay = global.getMethod("getRealDisplay", int.class);
@@ -86,6 +90,7 @@ final class Reporter {
     StructPollfd poll = new StructPollfd();
     poll.fd = socket.getFileDescriptor();
     poll.events = (short) OsConstants.POLLIN;
+    confirmed.clear();
     send(out, "hello", Integer.toString(VERSION));
     int state = Integer.MIN_VALUE;
     String anchors = null;
@@ -104,6 +109,7 @@ final class Reporter {
         anchors = snapshot;
         send(out, "anchors", snapshot);
       }
+      for (String drag; (drag = confirmed.poll()) != null;) send(out, "drag", drag);
       String nowLimit = limit();
       if (nowLimit != null && !nowLimit.equals(limit)) {
         limit = nowLimit;
@@ -186,6 +192,7 @@ final class Reporter {
       @Override
       public void run() {
         try {
+          if (drags != null) drags.clear();
           AnchorState.method(controller, "resetDefaultSpline").invoke(controller);
           AnchorState.method(displayController, "updateBrightness").invoke(displayController);
           Log.i(TAG, "System anchors: reset by the module");

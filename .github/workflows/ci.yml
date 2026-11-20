@@ -64,6 +64,8 @@ jobs:
           shellcheck --severity=warning module/*.sh
           sudo apt-get update -qq
           sudo apt-get install --yes busybox
+          python3 tests/hot_update_test.py
+          HOT_TEST_BUSYBOX=/usr/bin/busybox python3 tests/hot_update_test.py
           python3 tests/release_test.py
           python3 tests/start_service_test.py
           IAB_TEST_BUSYBOX=/usr/bin/busybox python3 tests/start_service_test.py
@@ -72,7 +74,8 @@ jobs:
       - name: Check the system_server anchor restore
         run: |
           javac -Xlint:all -Werror -d build/java-test zygisk/java/iab/AnchorState.java zygisk/java/iab/SystemState.java \
-            tests/AnchorStateTest.java tests/SystemStateTest.java
+            zygisk/java/iab/SliderGesture.java zygisk/java/iab/SliderCommit.java tests/SliderGestureTest.java tests/AnchorStateTest.java tests/SystemStateTest.java
+          java -cp build/java-test iab.SliderGestureTest
           java -cp build/java-test iab.AnchorStateTest
           java -cp build/java-test iab.SystemStateTest
       - name: Detect core implementation

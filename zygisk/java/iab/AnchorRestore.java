@@ -10,7 +10,7 @@ import android.util.SparseArray;
  * RefactorNitController anchors in memory only, so after a reboot the system
  * would write its default curve while the daemon still follows the learned
  * one. Once the controller of the main display exists, this writes the
- * anchors kept in learn.conf back into it on the display handler thread.
+ * anchors kept in learn-touch.conf back into it on the display handler thread.
  * After boot the same thread reports the display state, the anchors, the
  * thermal limit and the light sensor scene to the daemon (Reporter).
  * Nothing here may throw into system_server.
@@ -30,11 +30,11 @@ public final class AnchorRestore {
     this.state = state;
   }
 
-  /** Called from the Zygisk library on the system_server main thread; learn is empty without learn.conf. */
+  /** Called from the Zygisk library on the system_server main thread; learn is empty without learn-touch.conf. */
   public static void start(String learn) {
     try {
       AnchorState parsed = learn.isEmpty() ? null : AnchorState.parse(learn);
-      if (!learn.isEmpty() && parsed == null) Log.w(TAG, "System anchors: learn.conf is not usable");
+      if (!learn.isEmpty() && parsed == null) Log.w(TAG, "System anchors: learn-touch.conf is not usable");
       final AnchorState state = parsed != null && parsed.userAnchors() > 0 ? parsed : null;
       Thread thread = new Thread(new Runnable() {
         @Override

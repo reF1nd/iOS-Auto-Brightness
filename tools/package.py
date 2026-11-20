@@ -51,7 +51,7 @@ with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslev
 with zipfile.ZipFile(archive) as z:
     assert z.testzip() is None
     for name in ['module.prop','customize.sh','service.sh','start-service.sh','process-group.sh','uninstall.sh','skip_mount',
-                 'control.sh','check_status.sh','default.conf','webroot/index.html','webroot/app.js',
+                 'control.sh','check_status.sh','hot-update.sh','hotinstall.sh','default.conf','webroot/index.html','webroot/app.js',
                  'bin/arm64-v8a/ios_brightness_daemon','zygisk/arm64-v8a.so','zygisk/armeabi-v7a.so','anchors.dex',
                  'LICENSE','SOURCE.txt']:
         assert name in z.namelist(), name

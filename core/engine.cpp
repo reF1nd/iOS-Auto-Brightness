@@ -192,33 +192,40 @@ void Engine::wake(int64_t now) {
   fresh_front_ = false;
 }
 
+bool Engine::save_curve(const NitController& next) {
+  if (!platform_.save_learning(next.serialize())) {
+    last_learning_ = "save_failed";
+    log("Learn: cannot persist curve");
+    return false;
+  }
+  curve_.controller() = next;
+  return true;
+}
+
 // needResetShortTermModelPolicy on the first light reading after the screen
 // comes back: after 30 minutes off, or 6 minutes off with the light changed by
 // more than 20 lux, a drag above the good curve falls back to it.
 void Engine::check_good_curve(float lux) {
   reset_check_ = false;
-  // The framework applies it itself, and the reporter brings the result.
-  if (platform_.follows_system()) return;
   const int64_t off = platform_.elapsed_ms() - closed_at_;
-  if (!curve_.learnable() || !curve_.controller().config().reset_policy) return;
+  if (!config_.learning_enabled || !curve_.learnable() || !curve_.controller().config().reset_policy) return;
   if (!(off >= kResetAfterMs || (std::fabs(lux - closed_lux_) > kResetLuxChange && off >= kResetLightChangeAfterMs))) {
     return;
   }
-  if (!curve_.controller().use_good_curve()) return;
-  platform_.save_learning(curve_.controller().serialize());
+  NitController next(curve_.controller());
+  if (!next.use_good_curve() || !save_curve(next)) return;
   last_learning_ = "good_curve";
   log("Learn: good curve after %llds off (%.1f -> %.1f lux)", static_cast<long long>(off / 1000), closed_lux_, lux);
 }
 
 void Engine::check_learning(int64_t now) {
+  float lux = 0.0f, logical = 0.0f;
+  const bool committed = platform_.user_drag(lux, logical);
   if (mode_ != 1 || !screen_on_) {
     learn_pending_ = false;
     return;
   }
-  // Only a slider drag in auto mode reaches updateLogicalCurve; the framework
-  // rewrites screen_brightness on its own all the time.
-  float lux = 0.0f, logical = 0.0f;
-  if (platform_.user_drag(lux, logical)) {
+  if (committed) {
     if (!config_.learning_enabled) {
       last_learning_ = "disabled";
       return;
@@ -227,9 +234,9 @@ void Engine::check_learning(int64_t now) {
       last_learning_ = "unsupported";
       return;
     }
-    NitController& controller = curve_.controller();
+    NitController controller(curve_.controller());
     controller.drag(lux, logical);
-    platform_.save_learning(controller.serialize());
+    if (!save_curve(controller)) return;
     std::string anchors;
     for (const Anchor& anchor : controller.anchors()) {
       char item[48];
@@ -262,22 +269,19 @@ void Engine::check_learning(int64_t now) {
   }
 }
 
-// The framework's anchors as reported: drags come through user_drag above;
-// this catches what changes them otherwise (its good curve, a reset), so the
-// system and the daemon keep writing the same curve.
+// A system snapshot may confirm the fallback derived from previously learned drags.
 void Engine::follow_system() {
   std::string text;
   if (!platform_.system_anchors(text) || !config_.learning_enabled || !curve_.learnable()) return;
   NitController& ours = curve_.controller();
   NitController system(ours.config());
   if (!system.parse(text) || system.same(ours)) return;
-  const bool reset = system.user_anchors() == 0;
-  const bool good = !reset && ours.has_good_curve() && !system.has_good_curve();
-  ours = system;
-  platform_.save_learning(ours.serialize());
-  last_learning_ = reset ? "reset" : good ? "good_curve" : "learned";
-  log("Learn: following the system's anchors (%s, %d dragged)", reset ? "reset" : good ? "good curve" : "changed",
-      ours.user_anchors());
+  // Accept only the known fallback computed from our own verified points.
+  NitController expected(ours);
+  if (!expected.use_good_curve() || !system.same(expected)) return;
+  if (!save_curve(expected)) return;
+  last_learning_ = "good_curve";
+  log("Learn: system applied the good curve");
 }
 
 void Engine::tick(int64_t now) {
@@ -561,17 +565,16 @@ void Engine::tick(int64_t now) {
 }
 
 void Engine::reset_learning() {
+  NitController cleared(curve_.controller().config());
+  if (!save_curve(cleared)) return;
   platform_.reset_system_anchors();
-  curve_.controller().reset();
   learn_pending_ = false;
-  platform_.save_learning(curve_.controller().serialize());
   last_learning_ = "reset";
   log("Learn: reset");
 }
 
 void Engine::shutdown() {
   platform_.set_system_writable(true);
-  platform_.save_learning(curve_.controller().serialize());
   log("Stopped (bright:%d dark:%d 阳光:%d)", bright_count_, dark_count_, sunlight_count_);
 }
 

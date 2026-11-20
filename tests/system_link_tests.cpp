@@ -54,6 +54,14 @@ void reports_state_and_anchors() {
   CHECK(pair.link.connected());
   CHECK_EQ(pair.link.display_state(), 4);
   CHECK(pair.link.anchors() == kAnchors);
+  float lux, nit;
+  CHECK(!pair.link.take_drag(10000, lux, nit));
+  put(pair.peer, message("drag", "1000 0 5") + message("drag", "9999 162 153.104"));
+  pair.link.service();
+  CHECK(pair.link.take_drag(10000, lux, nit));
+  CHECK_EQ(lux, 162.0f);
+  CHECK_NEAR(nit, 153.104, 1e-4);
+  CHECK(!pair.link.take_drag(10000, lux, nit));
   // Nothing new, nothing reported.
   CHECK_EQ(pair.link.service(), 0u);
   put(pair.peer, message("state", "4") + message("anchors", kAnchors));

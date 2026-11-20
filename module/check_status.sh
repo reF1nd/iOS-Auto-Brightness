@@ -11,7 +11,7 @@ for f in supervisor.pid daemon.pid; do printf '%s: %s\n' "$f" "$(cat "$STATE/$f"
 echo 'Config validation:'
 "$MODDIR/bin/ios_brightness_daemon" --validate-config < "$STATE/config.conf"
 echo 'Learning anchors:'
-cat "$STATE/learn.conf" 2>/dev/null || echo '(no learn.conf: system default anchors)'
+cat "$STATE/learn-touch.conf" 2>/dev/null || echo '(no learn-touch.conf: system default anchors)'
 echo 'System mode / slider:'
 settings get system screen_brightness_mode
 settings get system screen_brightness

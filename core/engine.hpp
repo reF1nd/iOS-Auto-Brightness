@@ -53,11 +53,10 @@ class Platform {
   virtual bool user_drag(float& lux, float& logical) = 0;
   // CLOCK_BOOTTIME milliseconds (SystemClock.elapsedRealtime).
   virtual int64_t elapsed_ms() = 0;
-  virtual void save_learning(const std::string& text) = 0;
+  virtual bool save_learning(const std::string& text) = 0;
   virtual void log(const std::string& line) = 0;
   // While the Zygisk reporter is connected, the framework's anchors arrive
   // live: once per change, in learn.conf form.
-  virtual bool follows_system() { return false; }
   virtual bool system_anchors(std::string& text) {
     (void)text;
     return false;
@@ -125,6 +124,7 @@ class Engine {
   void wake(int64_t now);
   void check_good_curve(float lux);
   void follow_system();
+  bool save_curve(const NitController& next);
   void log(const char* format, ...) __attribute__((format(printf, 2, 3)));
 
   Platform& platform_;

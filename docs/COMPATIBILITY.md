@@ -10,13 +10,11 @@
   - 没有开启该策略、但 `dumpsys display` 有 `BrightnessConfiguration` 时，按其中的点做单调三次样条，与 AOSP 映射一致，不学习。
   - 两者都没有时使用小米 17 Pro Max 的逻辑尼特曲线。
   - 屏幕亮度表（尼特 ↔ 亮度值）从 `dumpsys display` 读取，读不到时用同一设备的配置。节点值按“亮度值 × `max_brightness`”换算；在本机暗处，这比系统经驱动写出的值低约 8%（系统写 `brightness_clone` 143 时节点为 154），别的屏幕驱动可能差得更多。
-- **学习**：依赖 `dumpsys display` 中主屏（`mDisplayId=0`）`Refactor Nit Controller Configuration` 段的 `mUserLux`/`mUserLogicalNit`。没有该段（未开启上述策略的 HyperOS、非小米系统）时不学习。学习记录与 ROM 的默认锚点绑定：系统更新改了默认锚点后，旧记录会被丢弃并从默认开始。副屏和折叠屏的外屏不参与。
-- **重启后保留学习**：HyperOS 只在内存里保存锚点，重启后回到默认曲线；系统在模块两次写入之间写的是它自己的值，所以只靠 `learn.conf` 时，重启后看起来"没记住"。装有 Zygisk（Zygisk Next、ReZygisk、NeoZygisk 或 Magisk 自带）时，模块的 Zygisk 部分会在 system_server 启动后，把 `learn.conf` 写回主屏的 `RefactorNitController`，两边从开机起就一致。
-  - 只改写锚点相关的字段（`mAnchor*`、`mGoodAnchor*`、`mOrderCounter`、`mIsHaveGoodCurve`、`mUserLux`、`mUserLogicalNit`），之后的学习和 good curve 仍由系统完成，不挂钩任何方法。字段名取自 HyperOS 的 `miui-services.jar`；找不到字段、系统默认曲线和 `learn.conf` 不一致时什么也不改，并在 logcat（标签 `iOS_Bright`）里说明原因。
-  - 启动日志会写明系统和模块的锚点是否一致（`Learn: the system holds ...`）。
-  - 开机完成后，同一线程改为上报：连接守护进程监听的抽象 socket `iab_brightness`，主屏显示状态、锚点、温控上限或双光感场景（手电筒、夜间驾驶、反光）一变就发送（每 0.5 秒检查一次，锚点在显示 handler 线程上读取）。守护进程据此识别拖动、跟随系统的 good curve 回落和重置，不再每 8 秒执行 `dumpsys display`；WebUI 清除学习时也让系统一起重置。守护进程只接受 uid 1000、进程名为 `system_server` 的连接，上报方也只连 root 的监听端。没有连接时回到 `dumpsys` 和 `bl_power`，WebUI 的“系统联动”显示当前方式。
-  - system_server 在 2 分钟内连续第三次启动时（例如开机循环），Zygisk 部分停止工作并留下 `zygisk.disabled`，重新安装模块后恢复。
-  - 这部分在 system_server 启动时加载，所以模块的安装和更新都要重启才生效；APatch、没有 Zygisk 的 KernelSU 不支持。
+- **学习**：Zygisk 在主用户的 SystemUI 和设置进程监听已适配的亮度滑块。单指沿滑块方向移动超过系统触摸阈值、产生用户进度变化且正常松手后，主屏显示线程核对系统新增锚点的顺序和逻辑尼特。长按打开控制中心菜单会取消这一整次触摸；在展开面板重新按下并拖动可以学习。没有 Zygisk、滑块实现不匹配或系统只提供 AOSP 曲线时，模块仍可调光，暂停新增学习点。
+- **重启后保留学习**：Zygisk 在开机时将 `learn-touch.conf` 中与 ROM 默认曲线匹配的锚点写回主屏 `RefactorNitController`。旧版 `learn.conf` 保留在原位。
+  - 开机后，系统通过 `iab_brightness` 上报已确认的手拖、主屏显示状态、锚点、温控和双光感场景。守护进程只接受 system_server 的连接，断开后用 `dumpsys` 和 `bl_power` 获取调光所需信息。系统锚点快照只能确认已有学习点的 good curve 回落。WebUI 清除学习时同时请求重置系统锚点。
+  - system_server 在两分钟内连续第三次启动时会触发恢复保护。模块诊断和 logcat 的 `iOS_Bright` 标签会报告相关状态。
+- **热更新**：模块记录本次开机已激活的 `zygisk/` 文件和 `anchors.dex` 的指纹。首次重启前重复刷包、指纹缺失或载荷变化时，安装器将新版本暂存到重启。支持原生热安装的 KernelSU 负责替换目录，其他兼容安装器走带备份的热替换路径。运行中的新版核心须通过可执行文件身份与连续心跳检查。
 - **同系统的其他机型**：
   - 曲线参数、overlay 和屏幕亮度表都按本机读取，正常情况下与该机系统的默认曲线一致，可对照启动日志的 `Curve check`（与系统表相差超过 5% 时会注明）。
   - 后置光感的阈值、防抖、时间窗和 HBM 门限按本机 `dumpsys display` 读取；没有后置光感的机型只用前置。
